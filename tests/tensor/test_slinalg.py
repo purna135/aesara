@@ -54,16 +54,27 @@ def test_cholesky():
     # Check the default.
     ch_f = function([x], chol)
     check_lower_triangular(pd, ch_f)
+    # Explicit lower-triangular.
+    chol = Cholesky(lower=True)(x)
+    ch_f = function([x], chol)
+    check_lower_triangular(pd, ch_f)
+    # Explicit upper-triangular.
+    chol = Cholesky(lower=False)(x)
+    ch_f = function([x], chol)
+    check_upper_triangular(pd, ch_f)
+    chol = Cholesky(lower=False, on_error="nan")(x)
+    ch_f = function([x], chol)
+    check_upper_triangular(pd, ch_f)
 
 
 def test_cholesky_indef():
     x = matrix()
     mat = np.array([[1, 0.2], [0.2, -2]]).astype(config.floatX)
-    cholesky = Cholesky(on_error="raise")
+    cholesky = Cholesky(lower=True, on_error="raise")
     chol_f = function([x], cholesky(x))
     with pytest.raises(scipy.linalg.LinAlgError):
         chol_f(mat)
-    cholesky = Cholesky(on_error="nan")
+    cholesky = Cholesky(lower=True, on_error="nan")
     chol_f = function([x], cholesky(x))
     assert np.all(np.isnan(chol_f(mat)))
 
@@ -76,16 +87,35 @@ def test_cholesky_grad():
 
     # Check the default.
     utt.verify_grad(lambda r: cholesky(r.dot(r.T)), [r], 3, rng)
+    # Explicit lower-triangular.
+    utt.verify_grad(
+        lambda r: Cholesky(lower=True)(r.dot(r.T)),
+        [r],
+        3,
+        rng,
+        abs_tol=0.05,
+        rel_tol=0.05,
+    )
+
+    # Explicit upper-triangular.
+    utt.verify_grad(
+        lambda r: Cholesky(lower=False)(r.dot(r.T)),
+        [r],
+        3,
+        rng,
+        abs_tol=0.05,
+        rel_tol=0.05,
+    )
 
 
 def test_cholesky_grad_indef():
     x = matrix()
     mat = np.array([[1, 0.2], [0.2, -2]]).astype(config.floatX)
-    cholesky = Cholesky(on_error="raise")
+    cholesky = Cholesky(lower=True, on_error="raise")
     chol_f = function([x], grad(cholesky(x).sum(), [x]))
     with pytest.raises(scipy.linalg.LinAlgError):
         chol_f(mat)
-    cholesky = Cholesky(on_error="nan")
+    cholesky = Cholesky(lower=True, on_error="nan")
     chol_f = function([x], grad(cholesky(x).sum(), [x]))
     assert np.all(np.isnan(chol_f(mat)))
 
@@ -94,7 +124,7 @@ def test_cholesky_grad_indef():
 def test_cholesky_and_cholesky_grad_shape():
     rng = np.random.default_rng(utt.fetch_seed())
     x = matrix()
-    for l in (cholesky(x), Cholesky()(x), Cholesky(lower=False)(x)):
+    for l in (cholesky(x), Cholesky(lower=True)(x), Cholesky(lower=False)(x)):
         f_chol = aesara.function([x], l.shape)
         g = aesara.gradient.grad(l.sum(), x)
         f_cholgrad = aesara.function([x], g.shape)
@@ -283,14 +313,14 @@ class TestSolveTriangular(utt.InferShapeTester):
         A_val = np.asarray(rng.random((5, 5)), dtype=config.floatX)
         A_val = np.dot(A_val.transpose(), A_val)
 
-        C_val = np.linalg.cholesky(A_val)
+        C_val = scipy.linalg.cholesky(A_val, lower=lower)
 
         A = matrix()
         b = matrix()
 
-        cholesky = Cholesky()
+        cholesky = Cholesky(lower=lower)
         C = cholesky(A)
-        y_lower = solve_triangular(C, b)
+        y_lower = solve_triangular(C, b, lower=lower)
         lower_solve_func = aesara.function([C, b], y_lower)
 
         assert np.allclose(
@@ -331,7 +361,7 @@ class TestCholeskySolve(utt.InferShapeTester):
     def setup_method(self):
         self.op_class = CholeskySolve
         self.op = CholeskySolve()
-        self.op_upper = CholeskySolve()
+        self.op_upper = CholeskySolve(lower=False)
         super().setup_method()
 
     def test_repr(self):
@@ -419,6 +449,23 @@ class TestCholeskySolve(utt.InferShapeTester):
             x_result = fn(A_val.astype(A_dtype), b_val.astype(b_dtype))
 
             assert x.dtype == x_result.dtype
+
+
+def test_cho_solve():
+    rng = np.random.default_rng(utt.fetch_seed())
+    A = matrix()
+    b = matrix()
+    y = cho_solve((A, True), b)
+    cho_solve_lower_func = aesara.function([A, b], y)
+
+    b_val = np.asarray(rng.random((5, 1)), dtype=config.floatX)
+
+    A_val = np.tril(np.asarray(rng.random((5, 5)), dtype=config.floatX))
+
+    assert np.allclose(
+        scipy.linalg.cho_solve((A_val, True), b_val),
+        cho_solve_lower_func(A_val, b_val),
+    )
 
 
 def test_expm():
