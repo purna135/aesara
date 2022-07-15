@@ -1,5 +1,6 @@
 import logging
 from functools import partial
+from itertools import zip_longest
 from typing import Tuple, Union
 
 import numpy as np
@@ -10,8 +11,21 @@ from aesara.graph.basic import Apply
 from aesara.graph.op import Op
 from aesara.tensor import basic as at
 from aesara.tensor import math as tm
-from aesara.tensor.basic import as_tensor_variable, extract_diag
-from aesara.tensor.type import dvector, lscalar, matrix, scalar, vector
+from aesara.tensor.basic import (
+    arange,
+    as_tensor_variable,
+    concatenate,
+    extract_diag,
+    full,
+    mgrid,
+    swapaxes,
+    switch,
+    zeros,
+    zeros_like,
+)
+from aesara.tensor.extra_ops import broadcast_shape
+from aesara.tensor.subtensor import set_subtensor
+from aesara.tensor.type import dvector, lscalar, matrix, scalar, tensor, vector
 
 
 logger = logging.getLogger(__name__)
@@ -817,6 +831,200 @@ def tensorsolve(a, b, axes=None):
     return TensorSolve(axes)(a, b)
 
 
+class Solve(Op):
+    """
+    Aesara utilization of numpy.linalg.solve
+    Class wrapper for solve function.
+    """
+
+    _numop = staticmethod(np.linalg.solve)
+
+    def make_node(self, a, b):
+        a = as_tensor_variable(a)
+        b = as_tensor_variable(b)
+        out_dtype = aes.upcast(a.dtype, b.dtype)
+        broadcastable = [
+            ab and bb
+            for ab, bb in zip_longest(
+                a.broadcastable[::-1], b.broadcastable[::-1], fillvalue=True
+            )
+        ]
+        x = tensor(shape=broadcastable, dtype=out_dtype)
+        return Apply(self, [a, b], [x])
+
+    def perform(self, node, inputs, outputs):
+        (a, b,) = inputs
+        (x,) = outputs
+        x[0] = self._numop(a, b)
+
+    def infer_shape(self, fgraph, node, shapes):
+        if len(shapes[0]) == 2 and len(shapes[1]) >= 2:
+            return [shapes[1]]
+        elif len(shapes[0]) > 2 and shapes[1] == 2:
+            return [shapes[0][:-2] + shapes[1]]
+        elif len(shapes[0]) > 2 and shapes[1] > 2:
+            batch_shape = broadcast_shape(
+                tuple([shapes[0][i] for i in range(len(shapes[0]) - 2)]),
+                tuple([shapes[1][i] for i in range(len(shapes[1]) - 2)]),
+                arrays_are_shapes=True,
+            )
+            return [batch_shape + shapes[1][-2:]]
+        else:
+            raise ValueError(
+                "Incorrect number of input dimensions. Cannot infer shape."
+            )
+
+    def L_op(self, inputs, outputs, output_gradients):
+        r"""Reverse-mode gradient updates for matrix solve operation :math:`c = A^{-1} b`.
+        Symbolic expression for updates taken from [#]_.
+        References
+        ----------
+        .. [#] M. B. Giles, "An extended collection of matrix derivative results
+          for forward and reverse mode automatic differentiation",
+          http://eprints.maths.ox.ac.uk/1079/
+        """
+        raise NotImplementedError("Solve reverse mode gradient is not implemented yet.")
+        A, b = inputs
+
+        c = outputs[0]
+        # C is a scalar representing the entire graph
+        # `output_gradients` is (dC/dc,)
+        # We need to return (dC/d[inv(A)], dC/db)
+        c_bar = output_gradients[0]
+
+        trans_solve_op = type(self)()
+        b_bar = trans_solve_op(swapaxes(A, -1, -2), c_bar)
+        A_bar = -b_bar @ swapaxes(c, -1, -2)
+
+        return [A_bar, b_bar]
+
+
+def solve(a, b):
+    """
+    Aesara utilization of numpy.linalg.solve.
+    Solve a linear matrix equation, or system of linear scalar equations.
+    Computes the "exact" solution, `x`, of the well-determined, i.e., full
+    rank, linear matrix equation `ax = b`.
+    Parameters
+    ----------
+    a : (..., M, M) array_like
+        Coefficient matrix.
+    b : (..., M, K), array_like
+        Ordinate or "dependent variable" values. Note that numpy.linalg.solve
+        also allows b to have shape (..., M), which is explicitly forbiden
+        in aesara.
+    Returns
+    -------
+    x : (..., M, K) array_like
+        Solution to the system a x = b.  Returned shape is identical to `b`.
+    Raises
+    ------
+    LinAlgError
+        If `a` is singular or not square.
+    """
+    return Solve()(a, b)
+
+
+class Cholesky(Op):
+    """
+    Return a lower triangular matrix square root of positive semi-definite `x`.
+    L = cholesky(X) implies L @ L.T == X.
+    X can have shape (..., M, M) and the resulting L will have shape (..., M, M) too
+    Parameters
+    ----------
+    on_error : ['raise', 'nan']
+        If on_error is set to 'raise', this Op will raise a
+        `scipy.linalg.LinAlgError` if the matrix is not positive definite.
+        If on_error is set to 'nan', it will return a matrix containing
+        nans instead.
+    """
+
+    # TODO: inplace
+    # TODO: for specific dtypes
+    # TODO: LAPACK wrapper with in-place behavior, for solve also
+
+    _numop = staticmethod(np.linalg.cholesky)
+    __props__ = ("on_error")
+
+    def __init__(self, on_error="raise"):
+        if on_error not in ("raise", "nan"):
+            raise ValueError('on_error must be one of "raise" or ""nan"')
+        self.on_error = on_error
+
+    def infer_shape(self, fgraph, node, shapes):
+        return [shapes[0]]
+
+    def make_node(self, x):
+        x = as_tensor_variable(x)
+        assert x.ndim >= 2
+        return Apply(self, [x], [x.type()])
+
+    def perform(self, node, inputs, outputs):
+        x = inputs[0]
+        z = outputs[0]
+        try:
+            z[0] = self._numop(x).astype(x.dtype)
+        except np.linalg.LinAlgError:
+            if self.on_error == "raise":
+                raise
+            else:
+                z[0] = np.full(x.shape, np.nan, x.dtype)
+
+    def L_op(self, inputs, outputs, gradients):
+        """
+        Cholesky decomposition reverse-mode gradient update.
+        Symbolic expression for reverse-mode Cholesky gradient taken from [#]_
+        References
+        ----------
+        .. [#] I. Murray, "Differentiation of the Cholesky decomposition",
+           http://arxiv.org/abs/1602.07527
+        """
+
+        dz = gradients[0]
+        chol_x = outputs[0]
+
+        # Replace the cholesky decomposition with 1 if there are nans
+        # or solve_upper_triangular will throw a ValueError.
+        if self.on_error == "nan":
+            ok = ~tm.any(tm.isnan(chol_x))
+            chol_x = switch(ok, chol_x, 1)
+            dz = switch(ok, dz, 1)
+
+        def tril_and_halve_diagonal(mtx):
+            """Extracts lower triangle of square matrix and halves diagonal."""
+            return at.tril(mtx) - at.diag(at.diagonal(mtx) / 2.0)
+
+        def conjugate_solve_triangular(outer, inner):
+            """Computes L^{-T} P L^{-1} for lower-triangular L."""
+            # TODO: solve performs a "full" solution.
+            # It would be great to get a solution that exploits the triangular nature of outer inner
+            return solve(
+                swapaxes(outer, -1, -2),
+                swapaxes(
+                    solve(
+                        swapaxes(outer, -1, -2),
+                        swapaxes(inner, -1, -2),
+                    ),
+                    -1,
+                    -2,
+                ),
+            )
+
+        s = conjugate_solve_triangular(
+            chol_x, tril_and_halve_diagonal(swapaxes(chol_x, -1, -2) @ dz)
+        )
+
+        grad = at.tril(s + swapaxes(s, -1, -2)) - at.diag(at.diagonal(s))
+
+        if self.on_error == "nan":
+            return [switch(ok, grad, np.nan)]
+        else:
+            return [grad]
+
+
+cholesky = Cholesky()
+
+
 __all__ = [
     "pinv",
     "inv",
@@ -832,4 +1040,5 @@ __all__ = [
     "norm",
     "tensorinv",
     "tensorsolve",
+    "cholesky",
 ]
