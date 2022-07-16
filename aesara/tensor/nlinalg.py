@@ -12,16 +12,10 @@ from aesara.graph.op import Op
 from aesara.tensor import basic as at
 from aesara.tensor import math as tm
 from aesara.tensor.basic import (
-    arange,
     as_tensor_variable,
-    concatenate,
     extract_diag,
-    full,
-    mgrid,
     swapaxes,
     switch,
-    zeros,
-    zeros_like,
 )
 from aesara.tensor.extra_ops import broadcast_shape
 from aesara.tensor.subtensor import set_subtensor
@@ -860,9 +854,9 @@ class Solve(Op):
     def infer_shape(self, fgraph, node, shapes):
         if len(shapes[0]) == 2 and len(shapes[1]) >= 2:
             return [shapes[1]]
-        elif len(shapes[0]) > 2 and shapes[1] == 2:
+        elif len(shapes[0]) > 2 and len(shapes[1]) == 2:
             return [shapes[0][:-2] + shapes[1]]
-        elif len(shapes[0]) > 2 and shapes[1] > 2:
+        elif len(shapes[0]) > 2 and len(shapes[1]) > 2:
             batch_shape = broadcast_shape(
                 tuple([shapes[0][i] for i in range(len(shapes[0]) - 2)]),
                 tuple([shapes[1][i] for i in range(len(shapes[1]) - 2)]),
@@ -883,7 +877,6 @@ class Solve(Op):
           for forward and reverse mode automatic differentiation",
           http://eprints.maths.ox.ac.uk/1079/
         """
-        raise NotImplementedError("Solve reverse mode gradient is not implemented yet.")
         A, b = inputs
 
         c = outputs[0]
@@ -944,7 +937,7 @@ class Cholesky(Op):
     # TODO: LAPACK wrapper with in-place behavior, for solve also
 
     _numop = staticmethod(np.linalg.cholesky)
-    __props__ = ("on_error")
+    __props__ = ("on_error",)
 
     def __init__(self, on_error="raise"):
         if on_error not in ("raise", "nan"):
