@@ -595,22 +595,22 @@ def test_cholesky_and_cholesky_grad_shape():
 
 
 class TestSolve(utt.InferShapeTester):
-    # @pytest.mark.parametrize("b_shape", [(5, 1), (5,)])
-    # def test_infer_shape(self, b_shape):
-    #     rng = np.random.default_rng(utt.fetch_seed())
-    #     A = matrix()
-    #     b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
-    #     b = at.as_tensor_variable(b_val).type()
-    #     self._compile_and_check(
-    #         [A, b],
-    #         [solve(A, b)],
-    #         [
-    #             np.asarray(rng.random((5, 5)), dtype=config.floatX),
-    #             b_val,
-    #         ],
-    #         Solve,
-    #         warn=False,
-    #     )
+    @pytest.mark.parametrize("b_shape", [(5, 1), (5,)])
+    def test_infer_shape(self, b_shape):
+        rng = np.random.default_rng(utt.fetch_seed())
+        A = matrix()
+        b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
+        b = at.as_tensor_variable(b_val).type()
+        self._compile_and_check(
+            [A, b],
+            [solve(A, b)],
+            [
+                np.asarray(rng.random((5, 5)), dtype=config.floatX),
+                b_val,
+            ],
+            Solve,
+            warn=False,
+        )
 
     def test_correctness(self):
         rng = np.random.default_rng(utt.fetch_seed())
@@ -645,8 +645,8 @@ class TestSolve(utt.InferShapeTester):
     @pytest.mark.parametrize(
         "m, n",
         [
-            # (5, None),
-            # (5, None),
+            (5, None),
+            (5, None),
             (4, 2),
             (4, 2),
         ],

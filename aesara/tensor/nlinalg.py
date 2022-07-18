@@ -18,7 +18,6 @@ from aesara.tensor.basic import (
     switch,
 )
 from aesara.tensor.extra_ops import broadcast_shape
-from aesara.tensor.subtensor import set_subtensor
 from aesara.tensor.type import dvector, lscalar, matrix, scalar, tensor, vector
 
 
@@ -836,14 +835,20 @@ class Solve(Op):
     def make_node(self, a, b):
         a = as_tensor_variable(a)
         b = as_tensor_variable(b)
+
+        if b.ndim == a.ndim -1:
+            a_batch = a.broadcastable[:-2]
+            b_batch = b.broadcastable[:-1]
+            broadcastable = [aa and bb for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)]
+            out_shape = broadcastable[::-1] + list(b.broadcastable[-1:])
+        else:
+            a_batch= a.broadcastable[:-2]
+            b_batch= b.broadcastable[:-2]
+            broadcastable = [aa and bb for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)]
+            out_shape = broadcastable[::-1] + list(b.broadcastable[-2:])
+
         out_dtype = aes.upcast(a.dtype, b.dtype)
-        broadcastable = [
-            ab and bb
-            for ab, bb in zip_longest(
-                a.broadcastable[::-1], b.broadcastable[::-1], fillvalue=True
-            )
-        ]
-        x = tensor(shape=broadcastable, dtype=out_dtype)
+        x = tensor(shape=out_shape, dtype=out_dtype)
         return Apply(self, [a, b], [x])
 
     def perform(self, node, inputs, outputs):
@@ -852,21 +857,21 @@ class Solve(Op):
         x[0] = self._numop(a, b)
 
     def infer_shape(self, fgraph, node, shapes):
-        if len(shapes[0]) == 2 and len(shapes[1]) >= 2:
-            return [shapes[1]]
-        elif len(shapes[0]) > 2 and len(shapes[1]) == 2:
-            return [shapes[0][:-2] + shapes[1]]
-        elif len(shapes[0]) > 2 and len(shapes[1]) > 2:
-            batch_shape = broadcast_shape(
-                tuple([shapes[0][i] for i in range(len(shapes[0]) - 2)]),
-                tuple([shapes[1][i] for i in range(len(shapes[1]) - 2)]),
-                arrays_are_shapes=True,
-            )
-            return [batch_shape + shapes[1][-2:]]
+        a_shape = shapes[0]
+        b_shape = shapes[1]
+
+        if(len(b_shape) == len(a_shape) - 1):
+            a_batch_shape = a_shape[:-2]
+            b_batch_shape = b_shape[:-1]
+            batch_shape = broadcast_shape(a_batch_shape, b_batch_shape, arrays_are_shapes = True)
+            
+            return [batch_shape + b_shape[-1:]]
         else:
-            raise ValueError(
-                "Incorrect number of input dimensions. Cannot infer shape."
-            )
+            a_batch_shape = a_shape[:-2]
+            b_batch_shape = b_shape[:-2]
+            batch_shape = broadcast_shape(a_batch_shape, b_batch_shape, arrays_are_shapes = True)
+            
+            return [batch_shape + b_shape[-2:]]
 
     def L_op(self, inputs, outputs, output_gradients):
         r"""Reverse-mode gradient updates for matrix solve operation :math:`c = A^{-1} b`.
