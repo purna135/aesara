@@ -11,12 +11,7 @@ from aesara.graph.basic import Apply
 from aesara.graph.op import Op
 from aesara.tensor import basic as at
 from aesara.tensor import math as tm
-from aesara.tensor.basic import (
-    as_tensor_variable,
-    extract_diag,
-    swapaxes,
-    switch,
-)
+from aesara.tensor.basic import as_tensor_variable, extract_diag, swapaxes, switch
 from aesara.tensor.extra_ops import broadcast_shape
 from aesara.tensor.type import dvector, lscalar, matrix, scalar, tensor, vector
 
@@ -831,20 +826,27 @@ class Solve(Op):
     """
 
     _numop = staticmethod(np.linalg.solve)
+    __props__ = ()
 
     def make_node(self, a, b):
         a = as_tensor_variable(a)
         b = as_tensor_variable(b)
 
-        if b.ndim == a.ndim -1:
+        if b.ndim == a.ndim - 1:
             a_batch = a.broadcastable[:-2]
             b_batch = b.broadcastable[:-1]
-            broadcastable = [aa and bb for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)]
+            broadcastable = [
+                aa and bb
+                for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)
+            ]
             out_shape = broadcastable[::-1] + list(b.broadcastable[-1:])
         else:
-            a_batch= a.broadcastable[:-2]
-            b_batch= b.broadcastable[:-2]
-            broadcastable = [aa and bb for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)]
+            a_batch = a.broadcastable[:-2]
+            b_batch = b.broadcastable[:-2]
+            broadcastable = [
+                aa and bb
+                for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)
+            ]
             out_shape = broadcastable[::-1] + list(b.broadcastable[-2:])
 
         out_dtype = aes.upcast(a.dtype, b.dtype)
@@ -852,7 +854,10 @@ class Solve(Op):
         return Apply(self, [a, b], [x])
 
     def perform(self, node, inputs, outputs):
-        (a, b,) = inputs
+        (
+            a,
+            b,
+        ) = inputs
         (x,) = outputs
         x[0] = self._numop(a, b)
 
@@ -860,17 +865,21 @@ class Solve(Op):
         a_shape = shapes[0]
         b_shape = shapes[1]
 
-        if(len(b_shape) == len(a_shape) - 1):
+        if len(b_shape) == len(a_shape) - 1:
             a_batch_shape = a_shape[:-2]
             b_batch_shape = b_shape[:-1]
-            batch_shape = broadcast_shape(a_batch_shape, b_batch_shape, arrays_are_shapes = True)
-            
+            batch_shape = broadcast_shape(
+                a_batch_shape, b_batch_shape, arrays_are_shapes=True
+            )
+
             return [batch_shape + b_shape[-1:]]
         else:
             a_batch_shape = a_shape[:-2]
             b_batch_shape = b_shape[:-2]
-            batch_shape = broadcast_shape(a_batch_shape, b_batch_shape, arrays_are_shapes = True)
-            
+            batch_shape = broadcast_shape(
+                a_batch_shape, b_batch_shape, arrays_are_shapes=True
+            )
+
             return [batch_shape + b_shape[-2:]]
 
     def L_op(self, inputs, outputs, output_gradients):
@@ -892,7 +901,7 @@ class Solve(Op):
 
         trans_solve_op = type(self)()
         b_bar = trans_solve_op(swapaxes(A, -1, -2), c_bar)
-        A_bar = -b_bar @ swapaxes(c, -1, -2)
+        A_bar = -tm.outer(b_bar, c) if c.ndim == 1 else -b_bar @ swapaxes(c, -1, -2)
 
         return [A_bar, b_bar]
 
