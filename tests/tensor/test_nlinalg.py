@@ -536,6 +536,13 @@ def check_upper_triangular(pd, ch_f):
 
 def test_cholesky():
     rng = np.random.default_rng(utt.fetch_seed())
+    r = rng.standard_normal((5, 5)).astype(config.floatX)
+    pd = np.dot(r, r.T)
+    x = matrix()
+    chol = cholesky(x)
+    ch_f = function([x], chol)
+    check_lower_triangular(pd, ch_f)
+
     r = rng.standard_normal((10, 5, 5)).astype(config.floatX)
     pd = r @ np.moveaxis(r, -1, -2)
     x = tensor3()
@@ -561,7 +568,6 @@ def test_cholesky_grad():
     r = rng.standard_normal((5, 5)).astype(config.floatX)
 
     # The dots are inside the graph since Cholesky needs separable matrices
-
     utt.verify_grad(lambda r: cholesky(r @ np.moveaxis(r, -1, -2)), [r], 3, rng)
 
 
@@ -581,9 +587,9 @@ def test_cholesky_grad_indef():
 def test_cholesky_and_cholesky_grad_shape():
     rng = np.random.default_rng(utt.fetch_seed())
     x = matrix()
-    cholesky = Cholesky(on_error="raise")(x)
-    f_chol = aesara.function([x], cholesky.shape)
-    g = aesara.gradient.grad(cholesky.sum(), x)
+    chol = cholesky(x)
+    f_chol = aesara.function([x], chol.shape)
+    g = aesara.gradient.grad(chol.sum(), x)
     f_cholgrad = aesara.function([x], g.shape)
     topo_chol = f_chol.maker.fgraph.toposort()
     if config.mode != "FAST_COMPILE":

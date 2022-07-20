@@ -980,13 +980,16 @@ class Cholesky(Op):
     def L_op(self, inputs, outputs, gradients):
         """
         Cholesky decomposition reverse-mode gradient update.
+
         Symbolic expression for reverse-mode Cholesky gradient taken from [#]_
+
         References
         ----------
         .. [#] I. Murray, "Differentiation of the Cholesky decomposition",
            http://arxiv.org/abs/1602.07527
-        """
 
+        """
+        breakpoint()
         dz = gradients[0]
         chol_x = outputs[0]
 
