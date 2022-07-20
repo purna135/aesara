@@ -265,6 +265,11 @@ def test_det():
     f = aesara.function([x], det(x))
     assert np.allclose(np.linalg.det(r), f(r))
 
+    r = rng.standard_normal((2, 3, 3)).astype(config.floatX)
+    x = tensor3()
+    f = aesara.function([x], det(x))
+    assert np.allclose(np.linalg.det(r), f(r))
+
 
 def test_det_grad():
     rng = np.random.default_rng(utt.fetch_seed())

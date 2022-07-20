@@ -11,7 +11,7 @@ from aesara.graph.op import Op
 from aesara.tensor import basic as at
 from aesara.tensor import math as tm
 from aesara.tensor.basic import as_tensor_variable, extract_diag
-from aesara.tensor.type import dvector, lscalar, matrix, scalar, vector
+from aesara.tensor.type import dvector, lscalar, matrix, tensor, vector
 
 
 logger = logging.getLogger(__name__)
@@ -207,8 +207,8 @@ class Det(Op):
 
     def make_node(self, x):
         x = as_tensor_variable(x)
-        assert x.ndim == 2
-        o = scalar(dtype=x.dtype)
+        assert x.ndim >= 2
+        o = tensor(shape=x.broadcastable[:-2], dtype=x.dtype)
         return Apply(self, [x], [o])
 
     def perform(self, node, inputs, outputs):
@@ -223,10 +223,10 @@ class Det(Op):
     def grad(self, inputs, g_outputs):
         (gz,) = g_outputs
         (x,) = inputs
-        return [gz * self(x) * matrix_inverse(x).T]
+        return [gz * self(x) * at.swapaxes(matrix_inverse(x), -1, -2)]
 
     def infer_shape(self, fgraph, node, shapes):
-        return [()]
+        return [shapes[0][:-2]]
 
     def __str__(self):
         return "Det"
