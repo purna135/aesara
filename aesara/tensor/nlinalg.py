@@ -11,9 +11,10 @@ from aesara.graph.basic import Apply
 from aesara.graph.op import Op
 from aesara.tensor import basic as at
 from aesara.tensor import math as tm
-from aesara.tensor.basic import as_tensor_variable, extract_diag, swapaxes, switch
+from aesara.tensor.basic import as_tensor_variable, extract_diag, swapaxes
 from aesara.tensor.extra_ops import broadcast_shape
 from aesara.tensor.type import dvector, lscalar, matrix, scalar, tensor, vector
+from aesara.tensor.slinalg import solve_upper_triangular
 
 
 logger = logging.getLogger(__name__)
@@ -967,6 +968,7 @@ class Cholesky(Op):
         return Apply(self, [x], [x.type()])
 
     def perform(self, node, inputs, outputs):
+        # breakpoint()
         x = inputs[0]
         z = outputs[0]
         try:
@@ -989,7 +991,7 @@ class Cholesky(Op):
            http://arxiv.org/abs/1602.07527
 
         """
-        breakpoint()
+        # breakpoint()
         dz = gradients[0]
         chol_x = outputs[0]
 
@@ -997,8 +999,8 @@ class Cholesky(Op):
         # or solve_upper_triangular will throw a ValueError.
         if self.on_error == "nan":
             ok = ~tm.any(tm.isnan(chol_x))
-            chol_x = switch(ok, chol_x, 1)
-            dz = switch(ok, dz, 1)
+            chol_x = at.switch(ok, chol_x, at.eye(chol_x.shape[-1]))
+            dz = at.switch(ok, dz, at.eye(chol_x.shape[-1]))
 
         def tril_and_halve_diagonal(mtx):
             """Extracts lower triangle of square matrix and halves diagonal."""
@@ -1020,14 +1022,14 @@ class Cholesky(Op):
                 ),
             )
 
-        s = conjugate_solve_triangular(
+        s_ = conjugate_solve_triangular(
             chol_x, tril_and_halve_diagonal(swapaxes(chol_x, -1, -2) @ dz)
         )
-
-        grad = at.tril(s + swapaxes(s, -1, -2)) - at.diag(at.diagonal(s))
+        # breakpoint()
+        grad = at.tril(s_ + swapaxes(s_, -1, -2)) - at.diag(at.diagonal(s_))
 
         if self.on_error == "nan":
-            return [switch(ok, grad, np.nan)]
+            return [at.switch(ok, grad, np.nan)]
         else:
             return [grad]
 

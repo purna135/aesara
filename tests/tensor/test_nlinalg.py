@@ -572,15 +572,15 @@ def test_cholesky_grad():
 
 
 def test_cholesky_grad_indef():
-    x = matrix()
+    x = matrix('x')
     mat = np.array([[1, 0.2], [0.2, -2]]).astype(config.floatX)
     cholesky = Cholesky(on_error="raise")
     chol_f = function([x], grad(cholesky(x).sum(), [x]))
     with pytest.raises(np.linalg.LinAlgError):
         chol_f(mat)
-    # cholesky = Cholesky(on_error="nan")
-    # chol_f = function([x], grad(cholesky(x).sum(), [x]))
-    # assert np.all(np.isnan(chol_f(mat)))
+    cholesky = Cholesky(on_error="nan")
+    chol_f = function([x], grad(cholesky(x).sum(), [x]))
+    assert np.all(np.isnan(chol_f(mat)))
 
 
 @pytest.mark.slow
