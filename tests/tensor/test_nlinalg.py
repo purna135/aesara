@@ -514,90 +514,76 @@ class TestTensorInv(utt.InferShapeTester):
         assert _allclose(t_binv1, n_binv1)
 
 
-def check_lower_triangular(pd, ch_f):
-    ch = ch_f(pd)
-    tril_inds1, tril_inds2 = np.tril_indices(ch.shape[-1], k=0)
-    triu_inds1, triu_inds2 = np.triu_indices(ch.shape[-1], k=1)
-    assert np.all(ch[..., triu_inds1, triu_inds2] == 0)
-    assert np.any(ch[..., tril_inds1, tril_inds2] != 0)
-    assert np.allclose(ch @ np.moveaxis(ch, -1, -2), pd)
-    assert not np.allclose(np.moveaxis(ch, -1, -2) @ ch, pd)
+class TestCholesky(utt.InferShapeTester):
+    def check_lower_triangular(self, pd, ch_f):
+        ch = ch_f(pd)
+        tril_inds1, tril_inds2 = np.tril_indices(ch.shape[-1], k=0)
+        triu_inds1, triu_inds2 = np.triu_indices(ch.shape[-1], k=1)
+        assert np.all(ch[..., triu_inds1, triu_inds2] == 0)
+        assert np.any(ch[..., tril_inds1, tril_inds2] != 0)
+        assert np.allclose(ch @ np.moveaxis(ch, -1, -2), pd)
+        assert not np.allclose(np.moveaxis(ch, -1, -2) @ ch, pd)
 
+    def test_cholesky(self):
+        rng = np.random.default_rng(utt.fetch_seed())
+        r = rng.standard_normal((5, 5)).astype(config.floatX)
+        pd = np.dot(r, r.T)
+        x = matrix()
+        chol = cholesky(x)
+        ch_f = function([x], chol)
+        self.check_lower_triangular(pd, ch_f)
 
-def check_upper_triangular(pd, ch_f):
-    ch = ch_f(pd)
-    tril_inds1, tril_inds2 = np.tril_indices(ch.shape[-1], k=0)
-    triu_inds1, triu_inds2 = np.triu_indices(ch.shape[-1], k=1)
-    assert np.all(ch[..., triu_inds1, triu_inds2] != 0)
-    assert np.any(ch[..., tril_inds1, tril_inds2] == 0)
-    assert not np.allclose(ch @ np.moveaxis(ch, -1, -2), pd)
-    assert np.allclose(np.moveaxis(ch, -1, -2) @ ch, pd)
+        r = rng.standard_normal((10, 5, 5)).astype(config.floatX)
+        pd = r @ np.moveaxis(r, -1, -2)
+        x = tensor3()
+        chol = cholesky(x)
+        ch_f = function([x], chol)
+        self.check_lower_triangular(pd, ch_f)
 
+    def test_cholesky_indef(self):
+        x = matrix()
+        mat = np.array([[1, 0.2], [0.2, -2]]).astype(config.floatX)
+        cholesky = Cholesky(on_error="raise")
+        chol_f = function([x], cholesky(x))
+        with pytest.raises(np.linalg.LinAlgError):
+            chol_f(mat)
+        cholesky = Cholesky(on_error="nan")
+        chol_f = function([x], cholesky(x))
+        assert np.all(np.isnan(chol_f(mat)))
 
-def test_cholesky():
-    rng = np.random.default_rng(utt.fetch_seed())
-    r = rng.standard_normal((5, 5)).astype(config.floatX)
-    pd = np.dot(r, r.T)
-    x = matrix()
-    chol = cholesky(x)
-    ch_f = function([x], chol)
-    check_lower_triangular(pd, ch_f)
+    def test_cholesky_grad(self):
+        rng = np.random.default_rng(utt.fetch_seed())
+        r = rng.standard_normal((5, 5)).astype(config.floatX)
 
-    r = rng.standard_normal((10, 5, 5)).astype(config.floatX)
-    pd = r @ np.moveaxis(r, -1, -2)
-    x = tensor3()
-    chol = cholesky(x)
-    ch_f = function([x], chol)
-    check_lower_triangular(pd, ch_f)
+        # The dots are inside the graph since Cholesky needs separable matrices
+        utt.verify_grad(lambda r: cholesky(r @ np.moveaxis(r, -1, -2)), [r], 3, rng)
 
+    def test_cholesky_grad_indef(self):
+        x = matrix("x")
+        mat = np.array([[1, 0.2], [0.2, -2]]).astype(config.floatX)
+        cholesky = Cholesky(on_error="raise")
+        chol_f = function([x], grad(cholesky(x).sum(), [x]))
+        with pytest.raises(np.linalg.LinAlgError):
+            chol_f(mat)
+        cholesky = Cholesky(on_error="nan")
+        chol_f = function([x], grad(cholesky(x).sum(), [x]))
+        assert np.all(np.isnan(chol_f(mat)))
 
-def test_cholesky_indef():
-    x = matrix()
-    mat = np.array([[1, 0.2], [0.2, -2]]).astype(config.floatX)
-    cholesky = Cholesky(on_error="raise")
-    chol_f = function([x], cholesky(x))
-    with pytest.raises(np.linalg.LinAlgError):
-        chol_f(mat)
-    cholesky = Cholesky(on_error="nan")
-    chol_f = function([x], cholesky(x))
-    assert np.all(np.isnan(chol_f(mat)))
-
-
-def test_cholesky_grad():
-    rng = np.random.default_rng(utt.fetch_seed())
-    r = rng.standard_normal((5, 5)).astype(config.floatX)
-
-    # The dots are inside the graph since Cholesky needs separable matrices
-    utt.verify_grad(lambda r: cholesky(r @ np.moveaxis(r, -1, -2)), [r], 3, rng)
-
-
-def test_cholesky_grad_indef():
-    x = matrix("x")
-    mat = np.array([[1, 0.2], [0.2, -2]]).astype(config.floatX)
-    cholesky = Cholesky(on_error="raise")
-    chol_f = function([x], grad(cholesky(x).sum(), [x]))
-    with pytest.raises(np.linalg.LinAlgError):
-        chol_f(mat)
-    cholesky = Cholesky(on_error="nan")
-    chol_f = function([x], grad(cholesky(x).sum(), [x]))
-    assert np.all(np.isnan(chol_f(mat)))
-
-
-@pytest.mark.slow
-def test_cholesky_and_cholesky_grad_shape():
-    rng = np.random.default_rng(utt.fetch_seed())
-    x = matrix()
-    chol = cholesky(x)
-    f_chol = aesara.function([x], chol.shape)
-    g = aesara.gradient.grad(chol.sum(), x)
-    f_cholgrad = aesara.function([x], g.shape)
-    topo_chol = f_chol.maker.fgraph.toposort()
-    if config.mode != "FAST_COMPILE":
-        assert sum([node.op.__class__ == Cholesky for node in topo_chol]) == 0
-    for shp in [2, 3, 5]:
-        m = np.cov(rng.standard_normal((shp, shp + 10))).astype(config.floatX)
-        np.testing.assert_equal(f_chol(m), (shp, shp))
-        np.testing.assert_equal(f_cholgrad(m), (shp, shp))
+    @pytest.mark.slow
+    def test_cholesky_and_cholesky_grad_shape(self):
+        rng = np.random.default_rng(utt.fetch_seed())
+        x = matrix()
+        chol = cholesky(x)
+        f_chol = aesara.function([x], chol.shape)
+        g = aesara.gradient.grad(chol.sum(), x)
+        f_cholgrad = aesara.function([x], g.shape)
+        topo_chol = f_chol.maker.fgraph.toposort()
+        if config.mode != "FAST_COMPILE":
+            assert sum([node.op.__class__ == Cholesky for node in topo_chol]) == 0
+        for shp in [2, 3, 5]:
+            m = np.cov(rng.standard_normal((shp, shp + 10))).astype(config.floatX)
+            np.testing.assert_equal(f_chol(m), (shp, shp))
+            np.testing.assert_equal(f_cholgrad(m), (shp, shp))
 
 
 class TestSolve(utt.InferShapeTester):
