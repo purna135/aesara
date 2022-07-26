@@ -991,21 +991,8 @@ def solve(a, b):
 
 class Cholesky(Op):
     """
-    Return a lower triangular matrix square root of positive semi-definite `x`.
-    L = cholesky(X) implies L @ L.T == X.
-    X can have shape (..., M, M) and the resulting L will have shape (..., M, M) too
-    Parameters
-    ----------
-    on_error : ['raise', 'nan']
-        If on_error is set to 'raise', this Op will raise a
-        `scipy.linalg.LinAlgError` if the matrix is not positive definite.
-        If on_error is set to 'nan', it will return a matrix containing
-        nans instead.
+    Cholesky decomposition.
     """
-
-    # TODO: inplace
-    # TODO: for specific dtypes
-    # TODO: LAPACK wrapper with in-place behavior, for solve also
 
     _numop = staticmethod(np.linalg.cholesky)
     __props__ = ("on_error",)
@@ -1024,7 +1011,6 @@ class Cholesky(Op):
         return Apply(self, [x], [x.type()])
 
     def perform(self, node, inputs, outputs):
-        # breakpoint()
         x = inputs[0]
         z = outputs[0]
         try:
@@ -1047,12 +1033,11 @@ class Cholesky(Op):
            http://arxiv.org/abs/1602.07527
 
         """
-        # breakpoint()
         dz = gradients[0]
         chol_x = outputs[0]
 
-        # Replace the cholesky decomposition with 1 if there are nans
-        # or solve_upper_triangular will throw a ValueError.
+        # Replace the cholesky decomposition with identity matrix if
+        # there are nans or solve_upper_triangular will throw a ValueError.
         if self.on_error == "nan":
             ok = ~tm.any(tm.isnan(chol_x))
             chol_x = at.switch(ok, chol_x, at.eye(chol_x.shape[-1]))
@@ -1064,7 +1049,6 @@ class Cholesky(Op):
 
         def conjugate_solve_triangular(outer, inner):
             """Computes L^{-T} P L^{-1} for lower-triangular L."""
-            # TODO: solve performs a "full" solution.
             # It would be great to get a solution that exploits the triangular nature of outer inner
             return solve(
                 swapaxes(outer, -1, -2),
@@ -1081,7 +1065,7 @@ class Cholesky(Op):
         s_ = conjugate_solve_triangular(
             chol_x, tril_and_halve_diagonal(swapaxes(chol_x, -1, -2) @ dz)
         )
-        # breakpoint()
+
         grad = at.tril(s_ + swapaxes(s_, -1, -2)) - at.diag(at.diagonal(s_))
 
         if self.on_error == "nan":
@@ -1090,7 +1074,94 @@ class Cholesky(Op):
             return [grad]
 
 
-cholesky = Cholesky()
+def cholesky(x, on_error="raise"):
+    """
+    Cholesky decomposition.
+
+    Return the Cholesky decomposition, `L * L.H`, of the square matrix `a`,
+    where `L` is lower-triangular and .H is the conjugate transpose operator
+    (which is the ordinary transpose if `a` is real-valued).  `a` must be
+    Hermitian (symmetric if real-valued) and positive-definite. No
+    checking is performed to verify whether `a` is Hermitian or not.
+    In addition, only the lower-triangular and diagonal elements of `a`
+    are used. Only `L` is actually returned.
+
+    Parameters
+    ----------
+    a : (..., M, M) array_like
+        Hermitian (symmetric if all elements are real), positive-definite
+        input matrix.
+    on_error : ['raise', 'nan'], optional
+        If on_error is set to 'raise', this Op will raise a
+        `numpy.linalg.LinAlgError` if the matrix is not positive definite.
+        If on_error is set to 'nan', it will return a matrix containing
+        nans instead, default 'raise'.
+
+    Returns
+    -------
+    L : (..., M, M) array_like
+        Lower-triangular Cholesky factor of `a`.  Returns a matrix object if
+        `a` is a matrix object.
+
+    Raises
+    ------
+    LinAlgError
+       If on_error is set to 'raise' and decomposition fails, for example,
+       if `a` is not positive-definite.
+
+    See Also
+    --------
+    `scipy.linalg.cholesky <https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.cholesky.html#scipy.linalg.cholesky>`_ :
+            Similar function in SciPy.
+    `scipy.linalg.cholesky_banded <https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.cholesky_banded.html#scipy.linalg.cholesky_banded>`_ :
+            Cholesky decompose a banded Hermitian positive-definite matrix.
+    `scipy.linalg.cho_factor <https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.cho_factor.html#scipy.linalg.cho_factor>`_ :
+            Cholesky decomposition of a matrix, to use in `scipy.linalg.cho_solve <https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.cho_solve.html#scipy.linalg.cho_solve>`_.
+
+    Notes
+    -----
+    Broadcasting rules apply, see the `numpy.linalg <https://numpy.org/doc/stable/reference/routines.linalg.html#module-numpy.linalg>`_ documentation for
+    details.
+
+    The Cholesky decomposition is often used as a fast way of solving
+
+    .. math:: A \\mathbf{x} = \\mathbf{b}
+
+    (when `A` is both Hermitian/symmetric and positive-definite).
+
+    First, we solve for :math:`\\mathbf{y}` in
+
+    .. math:: L \\mathbf{y} = \\mathbf{b},
+
+    and then for :math:`\\mathbf{x}` in
+
+    .. math:: L.H \\mathbf{x} = \\mathbf{y}.
+
+    Examples
+    --------
+    >>> A = np.array([[1,-2j],[2j,5]])
+    >>> A
+    array([[ 1.+0.j, -0.-2.j],
+           [ 0.+2.j,  5.+0.j]])
+    >>> L = at.linalg.cholesky(A).eval()
+    >>> L
+    array([[1.+0.j, 0.+0.j],
+           [0.+2.j, 1.+0.j]])
+    >>> np.dot(L, L.T.conj()) # verify that L * L.H = A
+    array([[1.+0.j, 0.-2.j],
+           [0.+2.j, 5.+0.j]])
+    >>> A = [[1,-2j],[2j,5]] # what happens if A is only array_like?
+    >>> at.linalg.cholesky(A).eval() # an ndarray object is returned
+    array([[1.+0.j, 0.+0.j],
+           [0.+2.j, 1.+0.j]])
+    >>> # But a matrix object is returned if A is a matrix object
+    >>> at.linalg.cholesky(np.matrix(A)).eval()
+    matrix([[ 1.+0.j,  0.+0.j],
+            [ 0.+2.j,  1.+0.j]])
+
+    """
+
+    return Cholesky(on_error=on_error)(x)
 
 
 __all__ = [
