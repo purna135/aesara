@@ -14,7 +14,6 @@ from aesara.tensor import math as tm
 from aesara.tensor.basic import as_tensor_variable, extract_diag, swapaxes
 from aesara.tensor.extra_ops import broadcast_shape
 from aesara.tensor.type import dvector, lscalar, matrix, scalar, tensor, vector
-from aesara.tensor.slinalg import solve_upper_triangular
 
 
 logger = logging.getLogger(__name__)
@@ -833,7 +832,17 @@ class Solve(Op):
         a = as_tensor_variable(a)
         b = as_tensor_variable(b)
 
+        # check for stacked 2d
+        if a.ndim < 2:
+            raise ValueError(
+                "%d-dimensional array given. Array must be "
+                "at least two-dimensional" % a.ndim
+            )
+
+        # We use the b = (..., M,) logic, only if the number of extra dimensions match
+        # exactly i.e when b.ndim == a.ndim - 1, else we will use b = (..., M, K) logic
         if b.ndim == a.ndim - 1:
+            # a : (..., M, M), b : (..., M) -> (..., M)
             a_batch = a.broadcastable[:-2]
             b_batch = b.broadcastable[:-1]
             broadcastable = [
@@ -842,6 +851,7 @@ class Solve(Op):
             ]
             out_shape = broadcastable[::-1] + list(b.broadcastable[-1:])
         else:
+            # a : (..., M, M), b : (..., M, K) -> (..., M, K)
             a_batch = a.broadcastable[:-2]
             b_batch = b.broadcastable[:-2]
             broadcastable = [
@@ -850,7 +860,11 @@ class Solve(Op):
             ]
             out_shape = broadcastable[::-1] + list(b.broadcastable[-2:])
 
-        out_dtype = aes.upcast(a.dtype, b.dtype)
+        # Infer dtype by solving the most simple case with 1x1 matrices
+        out_dtype = np.linalg.solve(
+            np.eye(1).astype(a.dtype), np.eye(1).astype(b.dtype)
+        ).dtype
+
         x = tensor(shape=out_shape, dtype=out_dtype)
         return Apply(self, [a, b], [x])
 
@@ -867,34 +881,37 @@ class Solve(Op):
         b_shape = shapes[1]
 
         if len(b_shape) == len(a_shape) - 1:
+            # a : (..., M, M), b : (..., M) -> (..., M)
             a_batch_shape = a_shape[:-2]
             b_batch_shape = b_shape[:-1]
             batch_shape = broadcast_shape(
                 a_batch_shape, b_batch_shape, arrays_are_shapes=True
             )
-
             return [batch_shape + b_shape[-1:]]
         else:
+            # a : (..., M, M), b : (..., M, K) -> (..., M, K)
             a_batch_shape = a_shape[:-2]
             b_batch_shape = b_shape[:-2]
             batch_shape = broadcast_shape(
                 a_batch_shape, b_batch_shape, arrays_are_shapes=True
             )
-
             return [batch_shape + b_shape[-2:]]
 
     def L_op(self, inputs, outputs, output_gradients):
         r"""Reverse-mode gradient updates for matrix solve operation :math:`c = A^{-1} b`.
+
         Symbolic expression for updates taken from [#]_.
+
         References
         ----------
         .. [#] M. B. Giles, "An extended collection of matrix derivative results
           for forward and reverse mode automatic differentiation",
-          http://eprints.maths.ox.ac.uk/1079/
+          https://people.maths.ox.ac.uk/gilesm/files/NA-08-01.pdf
+
         """
         A, b = inputs
-
         c = outputs[0]
+
         # C is a scalar representing the entire graph
         # `output_gradients` is (dC/dc,)
         # We need to return (dC/d[inv(A)], dC/db)
@@ -909,26 +926,65 @@ class Solve(Op):
 
 def solve(a, b):
     """
-    Aesara utilization of numpy.linalg.solve.
     Solve a linear matrix equation, or system of linear scalar equations.
+
     Computes the "exact" solution, `x`, of the well-determined, i.e., full
     rank, linear matrix equation `ax = b`.
+
     Parameters
     ----------
     a : (..., M, M) array_like
         Coefficient matrix.
-    b : (..., M, K), array_like
-        Ordinate or "dependent variable" values. Note that numpy.linalg.solve
-        also allows b to have shape (..., M), which is explicitly forbiden
-        in aesara.
+    b : {(..., M,), (..., M, K)}, array_like
+        Ordinate or "dependent variable" values.
+
     Returns
     -------
-    x : (..., M, K) array_like
+    x : {(..., M,), (..., M, K)} ndarray
         Solution to the system a x = b.  Returned shape is identical to `b`.
+
     Raises
     ------
     LinAlgError
         If `a` is singular or not square.
+
+    See Also
+    --------
+    `numpy.linalg.solve <https://numpy.org/doc/stable/reference/generated/numpy.linalg.solve.html>`_:
+        Similar function in Numpy.
+
+    Notes
+    -----
+    Broadcasting rules apply, see the `numpy.linalg <https://numpy.org/doc/stable/reference/routines.linalg.html>`_
+    documentation for details.
+
+    The solutions are computed using LAPACK routine ``_gesv``.
+
+    `a` must be square and of full-rank, i.e., all rows (or, equivalently,
+    columns) must be linearly independent; if either is not true, use
+    `lstsq` for the least-squares best "solution" of the
+    system/equation.
+
+    References
+    ----------
+    .. [1] G. Strang, *Linear Algebra and Its Applications*, 2nd Ed., Orlando,
+           FL, Academic Press, Inc., 1980, pg. 22.
+
+    Examples
+    --------
+    Solve the system of equations ``x0 + 2 * x1 = 1`` and ``3 * x0 + 5 * x1 = 2``:
+
+    >>> a = np.array([[1, 2], [3, 5]])
+    >>> b = np.array([1, 2])
+    >>> x = at.linalg.solve(a, b)
+    >>> x.eval()
+    array([-1.,  1.])
+
+    Check that the solution is correct:
+
+    >>> np.allclose(np.dot(a, x.eval()), b)
+    True
+
     """
     return Solve()(a, b)
 

@@ -6,15 +6,16 @@ from numpy.testing import assert_array_almost_equal
 
 import aesara
 from aesara import function, grad
+from aesara import tensor as at
 from aesara.configdefaults import config
 from aesara.graph.basic import Constant
 from aesara.tensor.math import _allclose
 from aesara.tensor.nlinalg import (
     SVD,
     Cholesky,
-    Solve,
     Eig,
     MatrixInverse,
+    Solve,
     TensorInv,
     cholesky,
     det,
@@ -27,11 +28,11 @@ from aesara.tensor.nlinalg import (
     norm,
     pinv,
     qr,
+    solve,
     svd,
     tensorinv,
     tensorsolve,
     trace,
-    solve,
 )
 from aesara.tensor.type import (
     lmatrix,
@@ -43,7 +44,6 @@ from aesara.tensor.type import (
     vector,
 )
 from tests import unittest_tools as utt
-from aesara import tensor as at
 
 
 def test_pseudoinverse_correctness():
@@ -572,7 +572,7 @@ def test_cholesky_grad():
 
 
 def test_cholesky_grad_indef():
-    x = matrix('x')
+    x = matrix("x")
     mat = np.array([[1, 0.2], [0.2, -2]]).astype(config.floatX)
     cholesky = Cholesky(on_error="raise")
     chol_f = function([x], grad(cholesky(x).sum(), [x]))
@@ -601,17 +601,25 @@ def test_cholesky_and_cholesky_grad_shape():
 
 
 class TestSolve(utt.InferShapeTester):
-    @pytest.mark.parametrize("b_shape", [(5, 1), (5,)])
-    def test_infer_shape(self, b_shape):
+    @pytest.mark.parametrize(
+        "a_shape, b_shape",
+        [
+            ((5, 5), (5,)),
+            ((5, 5), (5, 1)),
+            ((2, 5, 5), (1, 5)),
+            ((3, 5, 5), (1, 5, 3)),
+        ],
+    )
+    def test_infer_shape(self, a_shape, b_shape):
         rng = np.random.default_rng(utt.fetch_seed())
-        A = matrix()
+        A = matrix() if len(a_shape) == 2 else tensor3()
         b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
         b = at.as_tensor_variable(b_val).type()
         self._compile_and_check(
             [A, b],
             [solve(A, b)],
             [
-                np.asarray(rng.random((5, 5)), dtype=config.floatX),
+                np.asarray(rng.random(a_shape), dtype=config.floatX),
                 b_val,
             ],
             Solve,
@@ -623,16 +631,13 @@ class TestSolve(utt.InferShapeTester):
         A = matrix()
         b = matrix()
         y = solve(A, b)
-        gen_solve_func = aesara.function([A, b], y)
+        solve_func = aesara.function([A, b], y)
 
         b_val = np.asarray(rng.random((5, 1)), dtype=config.floatX)
-
         A_val = np.asarray(rng.random((5, 5)), dtype=config.floatX)
         A_val = np.dot(A_val.transpose(), A_val)
 
-        assert np.allclose(
-            numpy.linalg.solve(A_val, b_val), gen_solve_func(A_val, b_val)
-        )
+        assert np.allclose(numpy.linalg.solve(A_val, b_val), solve_func(A_val, b_val))
 
         A_undef = np.array(
             [
@@ -645,29 +650,38 @@ class TestSolve(utt.InferShapeTester):
             dtype=config.floatX,
         )
         assert np.allclose(
-            numpy.linalg.solve(A_undef, b_val), gen_solve_func(A_undef, b_val)
+            numpy.linalg.solve(A_undef, b_val), solve_func(A_undef, b_val)
         )
 
+        # test for batched data
+        A = tensor3()
+        b = matrix()
+        y = solve(A, b)
+        solve_func = aesara.function([A, b], y)
+
+        A_val = np.full((2, 3, 3), np.eye(3))
+        b_val = np.arange(2 * 3).reshape(2, 3)
+
+        assert np.allclose(numpy.linalg.solve(A_val, b_val), solve_func(A_val, b_val))
+
     @pytest.mark.parametrize(
-        "m, n",
+        "a_shape, b_shape",
         [
-            (5, None),
-            (5, None),
-            (4, 2),
-            (4, 2),
+            ((2, 2), (2,)),
+            ((3, 3), (3, 1)),
+            # ((2, 3, 3), (2, 3)),
+            # ((3, 5, 5), (1, 5, 3)),
         ],
     )
-    def test_solve_grad(self, m, n):
+    def test_solve_grad(self, a_shape, b_shape):
         rng = np.random.default_rng(utt.fetch_seed())
 
         # Ensure diagonal elements of `A` are relatively large to avoid
         # numerical precision issues
-        A_val = (rng.normal(size=(m, m)) * 0.5 + np.eye(m)).astype(config.floatX)
-
-        if n is None:
-            b_val = rng.normal(size=m).astype(config.floatX)
-        else:
-            b_val = rng.normal(size=(m, n)).astype(config.floatX)
+        A_val = (rng.normal(size=a_shape) * 0.5 + np.eye(a_shape[-1])).astype(
+            config.floatX
+        )
+        b_val = rng.normal(size=b_shape).astype(config.floatX)
 
         eps = None
         if config.floatX == "float64":
@@ -675,3 +689,11 @@ class TestSolve(utt.InferShapeTester):
 
         solve_op = Solve()
         utt.verify_grad(solve_op, [A_val, b_val], 3, rng, eps=eps)
+
+    def test_solve_dtype(self):
+        A_val = np.full((2, 3, 3), np.eye(3), dtype=np.int32)
+        b_val = np.arange(2 * 3).reshape(2, 3)
+
+        assert (
+            numpy.linalg.solve(A_val, b_val).dtype == solve(A_val, b_val).eval().dtype
+        )
