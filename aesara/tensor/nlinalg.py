@@ -418,6 +418,74 @@ class EighGrad(Op):
 
 
 def eigh(a, UPLO="L"):
+    """
+    Return the eigenvalues and eigenvectors of a complex Hermitian
+    (conjugate symmetric) or a real symmetric matrix.
+
+    Returns two objects, a 1-D array containing the eigenvalues of `a`, and
+    a 2-D square array or matrix (depending on the input type) of the
+    corresponding eigenvectors (in columns).
+
+    Parameters
+    ----------
+    a : (..., M, M) array
+        Hermitian or real symmetric matrices whose eigenvalues and
+        eigenvectors are to be computed.
+    UPLO : {'L', 'U'}, optional
+        Specifies whether the calculation is done with the lower triangular
+        part of `a` ('L', default) or the upper triangular part ('U').
+        Irrespective of this value only the real parts of the diagonal will
+        be considered in the computation to preserve the notion of a Hermitian
+        matrix. It therefore follows that the imaginary part of the diagonal
+        will always be treated as zero.
+
+    Returns
+    -------
+    w : (..., M) ndarray
+        The eigenvalues in ascending order, each repeated according to
+        its multiplicity.
+    v : {(..., M, M) ndarray, (..., M, M) matrix}
+        The column ``v[:, i]`` is the normalized eigenvector corresponding
+        to the eigenvalue ``w[i]``.  Will return a matrix object if `a` is
+        a matrix object.
+
+    Raises
+    ------
+    LinAlgError
+        If the eigenvalue computation does not converge.
+
+    See Also
+    --------
+    `eigvalsh <https://numpy.org/doc/stable/reference/generated/numpy.linalg.eigvalsh.html#numpy.linalg.eigvalsh>`_ :
+            eigenvalues of real symmetric or complex Hermitian
+            (conjugate symmetric) arrays.
+    `eig <https://numpy.org/doc/stable/reference/generated/numpy.linalg.eig.html#numpy.linalg.eig>`_ :
+            eigenvalues and right eigenvectors for non-symmetric arrays.
+    `eigvals <https://numpy.org/doc/stable/reference/generated/numpy.linalg.eigvals.html#numpy.linalg.eigvals>`_ :
+            eigenvalues of non-symmetric arrays.
+    `scipy.linalg.eigh <https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.eigh.html#scipy.linalg.eigh>`_ :
+            Similar function in SciPy (but also solves the
+            generalized eigenvalue problem).
+
+    Notes
+    -----
+    Broadcasting rules apply, see the `numpy.linalg <https://numpy.org/doc/stable/reference/routines.linalg.html#module-numpy.linalg>`_
+    documentation for details.
+
+    The eigenvalues/eigenvectors are computed using LAPACK routines ``_syevd``,
+    ``_heevd``.
+
+    The eigenvalues of real symmetric or complex Hermitian matrices are
+    always real. [1]_ The array `v` of (column) eigenvectors is unitary
+    and `a`, `w`, and `v` satisfy the equations
+    ``dot(a, v[:, i]) = w[i] * v[:, i]``.
+
+    References
+    ----------
+    .. [1] G. Strang, *Linear Algebra and Its Applications*, 2nd Ed., Orlando,
+           FL, Academic Press, Inc., 1980, pg. 222.
+    """
+
     return Eigh(UPLO)(a)
 
 
