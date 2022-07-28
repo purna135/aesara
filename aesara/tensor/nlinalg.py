@@ -483,6 +483,20 @@ def eigh(a, UPLO="L"):
     ----------
     .. [1] G. Strang, *Linear Algebra and Its Applications*, 2nd Ed., Orlando,
            FL, Academic Press, Inc., 1980, pg. 222.
+
+    Examples
+    --------
+    >>> import aesata.tensor as at
+    >>> import numpy as np
+    >>> a = np.array([[1, -2j], [2j, 5]])
+    >>> a
+    array([[ 1.+0.j, -0.-2.j],
+           [ 0.+2.j,  5.+0.j]])
+    >>> w, v = at.linalg.eigh(a)
+    >>> w.eval(); v.eval()
+    array([0.17157288, 5.82842712])
+    array([[-0.92387953+0.j        , -0.38268343+0.j        ], # may vary
+           [ 0.        +0.38268343j,  0.        -0.92387953j]])
     """
 
     return Eigh(UPLO)(a)
