@@ -346,6 +346,18 @@ class TestEigh(TestEig):
         assert_array_almost_equal(wu, wl)
         assert_array_almost_equal(vu * np.sign(vu[0, :]), vl * np.sign(vl[0, :]))
 
+        # test for batched data
+        a = np.full((2, 3, 3), np.eye(3)).astype(self.dtype)
+        w_at, v_at = self.op(a, "U")
+        w_np, v_np = np.linalg.eigh(a, "U")
+        assert np.allclose(w_at.eval(), w_np)
+        assert np.allclose(v_at.eval(), v_np)
+
+        w_at, v_at = self.op(a, "L")
+        w_np, v_np = np.linalg.eigh(a, "L")
+        assert np.allclose(w_at.eval(), w_np)
+        assert np.allclose(v_at.eval(), v_np)
+
     def test_grad(self):
         X = self.X
         # We need to do the dot inside the graph because Eigh needs a
