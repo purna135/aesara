@@ -288,14 +288,13 @@ class Eigh(Eig):
                 "at least two-dimensional" % x.ndim
             )
 
-        # Numpy's linalg.eigh may return either double or single
-        # presision eigenvalues depending on installed version of
-        # LAPACK.  Rather than trying to reproduce the (rather
-        # involved) logic, we just probe linalg.eigh with a trivial
-        # input.
-        w_dtype = self._numop([[np.dtype(x.dtype).type()]])[0].dtype.name
+        # Infer dtype by solving the most simple case with 1x1 matrices
+        np_result = self._numop(np.eye(1).astype(x.dtype))  # we will get w and v
+        w_dtype = np_result[0].dtype
+        v_dtype = np_result[1].dtype
+
         w = tensor(shape=x.broadcastable[:-1], dtype=w_dtype)
-        v = tensor(shape=x.broadcastable, dtype=w_dtype)
+        v = tensor(shape=x.broadcastable, dtype=v_dtype)
 
         return Apply(self, [x], [w, v])
 

@@ -355,6 +355,14 @@ class TestEigh(TestEig):
         utt.verify_grad(lambda x: self.op(x.dot(x.T), "U")[0], [X], rng=self.rng)
         utt.verify_grad(lambda x: self.op(x.dot(x.T), "U")[1], [X], rng=self.rng)
 
+    def test_dtype(self):
+        x = np.eye(2).astype(np.complex128)
+        w_at, v_at = self.op(x)
+        w_np, v_np = np.linalg.eigh(x)
+
+        assert w_at.eval().dtype == w_np.dtype
+        assert v_at.eval().dtype == v_np.dtype
+
 
 class TestEighFloat32(TestEigh):
     dtype = "float32"
