@@ -284,10 +284,10 @@ class SolveBase(Op):
         A = as_tensor_variable(A)
         b = as_tensor_variable(b)
 
-        if A.ndim != 2:
-            raise ValueError(f"`A` must be a matrix; got {A.type} instead.")
-        if b.ndim not in (1, 2):
-            raise ValueError(f"`b` must be a matrix or a vector; got {b.type} instead.")
+        # if A.ndim != 2:
+        #     raise ValueError(f"`A` must be a matrix; got {A.type} instead.")
+        # if b.ndim not in (1, 2):
+        #     raise ValueError(f"`b` must be a matrix or a vector; got {b.type} instead.")
 
         # Infer dtype by solving the most simple case with 1x1 matrices
         o_dtype = scipy.linalg.solve(
@@ -451,13 +451,21 @@ class Solve(SolveBase):
 
     def perform(self, node, inputs, outputs):
         a, b = inputs
-        outputs[0][0] = scipy.linalg.solve(
+        vfunc = np.vectorize(
+            scipy.linalg.solve,
+            excluded={"lower", "check_finite", "assume_a"},
+            signature="(m,m),(m,k)->(m,k)",
+        )
+        outputs[0][0] = vfunc(
             a=a,
             b=b,
             lower=self.lower,
             check_finite=self.check_finite,
             assume_a=self.assume_a,
         )
+
+    def infer_shape(self, fgraph, node, shapes):
+        return [shapes[1]]
 
 
 solve = Solve()
