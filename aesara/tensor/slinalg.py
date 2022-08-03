@@ -1,5 +1,6 @@
 import logging
 import warnings
+from itertools import zip_longest
 from typing import Union
 
 import numpy as np
@@ -11,6 +12,7 @@ from aesara.graph.op import Op
 from aesara.tensor import as_tensor_variable
 from aesara.tensor import basic as at
 from aesara.tensor import math as atm
+from aesara.tensor.extra_ops import broadcast_shape
 from aesara.tensor.type import matrix, tensor, vector
 from aesara.tensor.var import TensorVariable
 
@@ -311,21 +313,55 @@ class SolveBase(Op):
 
         _assert_stacked_2d(A)
 
+        # We use the b = (..., M,) logic, only if the number of extra dimensions match
+        # exactly i.e when b.ndim == a.ndim - 1, else we will use b = (..., M, K) logic
+        if b.ndim == A.ndim - 1:
+            # a : (..., M, M), b : (..., M) -> (..., M)
+            a_batch = A.broadcastable[:-2]
+            b_batch = b.broadcastable[:-1]
+            broadcastable = [
+                aa and bb
+                for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)
+            ]
+            out_shape = broadcastable[::-1] + list(b.broadcastable[-1:])
+        else:
+            # a : (..., M, M), b : (..., M, K) -> (..., M, K)
+            a_batch = A.broadcastable[:-2]
+            b_batch = b.broadcastable[:-2]
+            broadcastable = [
+                aa and bb
+                for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)
+            ]
+            out_shape = broadcastable[::-1] + list(b.broadcastable[-2:])
+
         # Infer dtype by solving the most simple case with 1x1 matrices
         o_dtype = scipy.linalg.solve(
             np.eye(1).astype(A.dtype), np.eye(1).astype(b.dtype)
         ).dtype
-        x = tensor(shape=b.broadcastable, dtype=o_dtype)
+
+        x = tensor(shape=out_shape, dtype=o_dtype)
         return Apply(self, [A, b], [x])
 
     def infer_shape(self, fgraph, node, shapes):
-        Ashape, Bshape = shapes
-        rows = Ashape[1]
-        if len(Bshape) == 1:
-            return [(rows,)]
+        a_shape = shapes[0]
+        b_shape = shapes[1]
+
+        if len(b_shape) == len(a_shape) - 1:
+            # a : (..., M, M), b : (..., M) -> (..., M)
+            a_batch_shape = a_shape[:-2]
+            b_batch_shape = b_shape[:-1]
+            batch_shape = broadcast_shape(
+                a_batch_shape, b_batch_shape, arrays_are_shapes=True
+            )
+            return [batch_shape + b_shape[-1:]]
         else:
-            cols = Bshape[1]
-            return [(rows, cols)]
+            # a : (..., M, M), b : (..., M, K) -> (..., M, K)
+            a_batch_shape = a_shape[:-2]
+            b_batch_shape = b_shape[:-2]
+            batch_shape = broadcast_shape(
+                a_batch_shape, b_batch_shape, arrays_are_shapes=True
+            )
+            return [batch_shape + b_shape[-2:]]
 
     def L_op(self, inputs, outputs, output_gradients):
         r"""Reverse-mode gradient updates for matrix solve operation :math:`c = A^{-1} b`.
@@ -483,10 +519,15 @@ class Solve(SolveBase):
 
     def perform(self, node, inputs, outputs):
         a, b = inputs
+
+        signature = "(m,m),(m,k)->(m,k)"
+        if len(b.shape) == len(a.shape) - 1:
+            signature = "(m,m),(m)->(m)"
+
         vfunc = np.vectorize(
             scipy.linalg.solve,
             excluded={"lower", "check_finite", "assume_a"},
-            signature="(m,m),(m,k)->(m,k)",
+            signature=signature,
         )
         outputs[0][0] = vfunc(
             a=a,
@@ -495,9 +536,6 @@ class Solve(SolveBase):
             check_finite=self.check_finite,
             assume_a=self.assume_a,
         )
-
-    def infer_shape(self, fgraph, node, shapes):
-        return [shapes[1]]
 
 
 solve = Solve()
