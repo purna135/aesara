@@ -1,4 +1,3 @@
-import functools
 import itertools
 
 import numpy as np
@@ -49,14 +48,14 @@ class TestCholesky(utt.InferShapeTester):
         assert not np.allclose(ch @ np.moveaxis(ch, -1, -2), pd)
 
     @pytest.mark.parametrize(
-        "shape",
+        "a_shape",
         [(5, 5), (2, 5, 5), (10, 3, 3)],
     )
-    def test_cholesky(self, shape):
+    def test_cholesky(self, a_shape):
         rng = np.random.default_rng(utt.fetch_seed())
-        r = rng.standard_normal((shape)).astype(config.floatX)
+        r = rng.standard_normal((a_shape)).astype(config.floatX)
         pd = r @ np.swapaxes(r, -1, -2)
-        x = matrix() if len(shape) == 2 else tensor3()
+        x = matrix() if len(a_shape) == 2 else tensor3()
         chol = cholesky(x)
         # Check the default.
         ch_f = function([x], chol)
@@ -85,12 +84,12 @@ class TestCholesky(utt.InferShapeTester):
         assert np.all(np.isnan(chol_f(mat)))
 
     @pytest.mark.parametrize(
-        "shape",
+        "a_shape",
         [(5, 5), (2, 5, 5), (1, 2, 3, 3)],
     )
-    def test_cholesky_grad(self, shape):
+    def test_cholesky_grad(self, a_shape):
         rng = np.random.default_rng(utt.fetch_seed())
-        r = rng.standard_normal(shape).astype(config.floatX)
+        r = rng.standard_normal(a_shape).astype(config.floatX)
         pd = r @ np.swapaxes(r, -1, -2)
         # The dots are inside the graph since Cholesky needs separable matrices
 
@@ -191,29 +190,6 @@ def test_eigvalsh_grad():
 
 
 class TestSolveBase(utt.InferShapeTester):
-    @pytest.mark.parametrize(
-        "A_func, b_func, error_message",
-        [
-            (vector, matrix, "`A` must be a matrix.*"),
-            (
-                functools.partial(tensor, dtype="floatX", shape=(False,) * 3),
-                matrix,
-                "`A` must be a matrix.*",
-            ),
-            (
-                matrix,
-                functools.partial(tensor, dtype="floatX", shape=(False,) * 3),
-                "`b` must be a matrix or a vector.*",
-            ),
-        ],
-    )
-    def test_make_node(self, A_func, b_func, error_message):
-        np.random.default_rng(utt.fetch_seed())
-        with pytest.raises(ValueError, match=error_message):
-            A = A_func()
-            b = b_func()
-            SolveBase()(A, b)
-
     def test__repr__(self):
         np.random.default_rng(utt.fetch_seed())
         A = matrix()
@@ -228,52 +204,62 @@ class TestSolve(utt.InferShapeTester):
             Solve(assume_a="test")
         assert "is not a recognized matrix structure" in str(excinfo.value)
 
-    @pytest.mark.parametrize("b_shape", [(5, 1), (5,)])
-    def test_infer_shape(self, b_shape):
+    @pytest.mark.parametrize(
+        "a_shape, b_shape",
+        [
+            ((5, 5), (5,)),
+            ((5, 5), (5, 1)),
+            ((2, 5, 5), (1, 5)),
+            ((3, 5, 5), (1, 5, 3)),
+        ],
+    )
+    def test_infer_shape(self, a_shape, b_shape):
         rng = np.random.default_rng(utt.fetch_seed())
-        A = matrix()
+        A = matrix() if len(a_shape) == 2 else tensor3()
         b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
         b = at.as_tensor_variable(b_val).type()
         self._compile_and_check(
             [A, b],
             [solve(A, b)],
             [
-                np.asarray(rng.random((5, 5)), dtype=config.floatX),
+                np.asarray(rng.random(a_shape), dtype=config.floatX),
                 b_val,
             ],
             Solve,
             warn=False,
         )
 
-    def test_correctness(self):
+    @pytest.mark.parametrize(
+        "a_shape, b_shape",
+        [
+            ((5, 5), (5,)),
+            ((5, 5), (5, 1)),
+            ((2, 5, 5), (1, 5)),
+            ((3, 5, 5), (1, 5, 3)),
+        ],
+    )
+    def test_correctness(self, a_shape, b_shape):
+        signature = "(m,m),(m,k)->(m,k)"
+        if len(b_shape) == len(a_shape) - 1:
+            signature = "(m,m),(m)->(m)"
+
+        solve_vfunc = np.vectorize(
+            scipy.linalg.solve,
+            excluded={"lower", "check_finite", "assume_a"},
+            signature=signature,
+        )
+
         rng = np.random.default_rng(utt.fetch_seed())
-        A = matrix()
-        b = matrix()
+        A = matrix() if len(a_shape) == 2 else tensor3()
+        A_val = np.asarray(rng.random(a_shape), dtype=config.floatX)
+        A_val = A_val @ np.swapaxes(A_val, -1, -2)
+        b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
+        b = at.as_tensor_variable(b_val).type()
+
         y = solve(A, b)
         gen_solve_func = aesara.function([A, b], y)
 
-        b_val = np.asarray(rng.random((5, 1)), dtype=config.floatX)
-
-        A_val = np.asarray(rng.random((5, 5)), dtype=config.floatX)
-        A_val = np.dot(A_val.transpose(), A_val)
-
-        assert np.allclose(
-            scipy.linalg.solve(A_val, b_val), gen_solve_func(A_val, b_val)
-        )
-
-        A_undef = np.array(
-            [
-                [1, 0, 0, 0, 0],
-                [0, 1, 0, 0, 0],
-                [0, 0, 1, 0, 0],
-                [0, 0, 0, 1, 1],
-                [0, 0, 0, 1, 0],
-            ],
-            dtype=config.floatX,
-        )
-        assert np.allclose(
-            scipy.linalg.solve(A_undef, b_val), gen_solve_func(A_undef, b_val)
-        )
+        assert np.allclose(solve_vfunc(A_val, b_val), gen_solve_func(A_val, b_val))
 
     @pytest.mark.parametrize(
         "m, n, assume_a, lower",
@@ -330,19 +316,45 @@ class TestSolveTriangular(utt.InferShapeTester):
             warn=False,
         )
 
-    @pytest.mark.parametrize("lower", [True, False])
-    def test_correctness(self, lower):
+    @pytest.mark.parametrize(
+        "a_shape, b_shape, lower",
+        [
+            ((5, 5), (5,), True),
+            ((5, 5), (5, 1), True),
+            ((2, 5, 5), (1, 5), True),
+            ((3, 5, 5), (1, 5, 3), True),
+            ((5, 5), (5,), False),
+            ((5, 5), (5, 1), False),
+            ((2, 5, 5), (1, 5), False),
+            ((3, 5, 5), (1, 5, 3), False),
+        ],
+    )
+    def test_correctness(self, a_shape, b_shape, lower):
+        cholesky_vfunc = np.vectorize(
+            scipy.linalg.cholesky,
+            excluded={"lower"},
+            signature="(m,m)->(m,m)",
+        )
+
+        signature = "(m,m),(m,k)->(m,k)"
+        if len(b_shape) == len(a_shape) - 1:
+            signature = "(m,m),(m)->(m)"
+
+        solve_triangular_vfunc = np.vectorize(
+            scipy.linalg.solve_triangular,
+            excluded={"lower", "trans", "unit_diagonal", "check_finite"},
+            signature=signature,
+        )
+
         rng = np.random.default_rng(utt.fetch_seed())
 
-        b_val = np.asarray(rng.random((5, 1)), dtype=config.floatX)
+        A = matrix() if len(a_shape) == 2 else tensor3()
+        A_val = np.asarray(rng.random(a_shape), dtype=config.floatX)
+        A_val = A_val @ np.swapaxes(A_val, -1, -2)
+        b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
+        b = at.as_tensor_variable(b_val).type()
 
-        A_val = np.asarray(rng.random((5, 5)), dtype=config.floatX)
-        A_val = np.dot(A_val.transpose(), A_val)
-
-        C_val = scipy.linalg.cholesky(A_val, lower=lower)
-
-        A = matrix()
-        b = matrix()
+        C_val = cholesky_vfunc(A_val, lower=lower)
 
         cholesky = Cholesky(lower=lower)
         C = cholesky(A)
@@ -350,7 +362,7 @@ class TestSolveTriangular(utt.InferShapeTester):
         lower_solve_func = aesara.function([C, b], y_lower)
 
         assert np.allclose(
-            scipy.linalg.solve_triangular(C_val, b_val, lower=lower),
+            solve_triangular_vfunc(C_val, b_val, lower=lower),
             lower_solve_func(C_val, b_val),
         )
 

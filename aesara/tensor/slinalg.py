@@ -70,13 +70,13 @@ class Cholesky(Op):
     def perform(self, node, inputs, outputs):
         x = inputs[0]
         z = outputs[0]
-        chol_vfunc = np.vectorize(
+        cholesky_vfunc = np.vectorize(
             scipy.linalg.cholesky,
             excluded={"lower"},
             signature="(m,m)->(m,m)",
         )
         try:
-            z[0] = chol_vfunc(x, lower=self.lower)
+            z[0] = cholesky_vfunc(x, lower=self.lower)
         except scipy.linalg.LinAlgError:
             if self.on_error == "raise":
                 raise
@@ -304,9 +304,6 @@ class SolveBase(Op):
         self.lower = lower
         self.check_finite = check_finite
 
-    def perform(self, node, inputs, outputs):
-        pass
-
     def make_node(self, A, b):
         A = as_tensor_variable(A)
         b = as_tensor_variable(b)
@@ -335,12 +332,15 @@ class SolveBase(Op):
             out_shape = broadcastable[::-1] + list(b.broadcastable[-2:])
 
         # Infer dtype by solving the most simple case with 1x1 matrices
-        o_dtype = scipy.linalg.solve(
+        out_dtype = scipy.linalg.solve(
             np.eye(1).astype(A.dtype), np.eye(1).astype(b.dtype)
         ).dtype
 
-        x = tensor(shape=out_shape, dtype=o_dtype)
+        x = tensor(shape=out_shape, dtype=out_dtype)
         return Apply(self, [A, b], [x])
+
+    def perform(self, node, inputs, outputs):
+        pass
 
     def infer_shape(self, fgraph, node, shapes):
         a_shape = shapes[0]
@@ -427,12 +427,12 @@ class SolveTriangular(SolveBase):
         if len(b.shape) == len(A.shape) - 1:
             signature = "(m,m),(m)->(m)"
 
-        solve_vfunc = np.vectorize(
+        solve_triangular_vfunc = np.vectorize(
             scipy.linalg.solve_triangular,
             excluded={"lower", "trans", "unit_diagonal", "check_finite"},
             signature=signature,
         )
-        outputs[0][0] = solve_vfunc(
+        outputs[0][0] = solve_triangular_vfunc(
             A,
             b,
             lower=self.lower,
@@ -524,12 +524,12 @@ class Solve(SolveBase):
         if len(b.shape) == len(a.shape) - 1:
             signature = "(m,m),(m)->(m)"
 
-        vfunc = np.vectorize(
+        solve_vfunc = np.vectorize(
             scipy.linalg.solve,
             excluded={"lower", "check_finite", "assume_a"},
             signature=signature,
         )
-        outputs[0][0] = vfunc(
+        outputs[0][0] = solve_vfunc(
             a=a,
             b=b,
             lower=self.lower,
