@@ -70,7 +70,7 @@ class Cholesky(Op):
         z = outputs[0]
         chol_vfunc = np.vectorize(
             scipy.linalg.cholesky,
-            excluded={"lower", "overwrite_a", "check_finite"},
+            excluded={"lower"},
             signature="(m,m)->(m,m)",
         )
         try:
@@ -309,10 +309,7 @@ class SolveBase(Op):
         A = as_tensor_variable(A)
         b = as_tensor_variable(b)
 
-        # if A.ndim != 2:
-        #     raise ValueError(f"`A` must be a matrix; got {A.type} instead.")
-        # if b.ndim not in (1, 2):
-        #     raise ValueError(f"`b` must be a matrix or a vector; got {b.type} instead.")
+        _assert_stacked_2d(A)
 
         # Infer dtype by solving the most simple case with 1x1 matrices
         o_dtype = scipy.linalg.solve(
@@ -389,7 +386,17 @@ class SolveTriangular(SolveBase):
 
     def perform(self, node, inputs, outputs):
         A, b = inputs
-        outputs[0][0] = scipy.linalg.solve_triangular(
+
+        signature = "(m,m),(m,k)->(m,k)"
+        if len(b.shape) == len(A.shape) - 1:
+            signature = "(m,m),(m)->(m)"
+
+        solve_vfunc = np.vectorize(
+            scipy.linalg.solve_triangular,
+            excluded={"lower", "trans", "unit_diagonal", "check_finite"},
+            signature=signature,
+        )
+        outputs[0][0] = solve_vfunc(
             A,
             b,
             lower=self.lower,

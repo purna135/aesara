@@ -305,17 +305,25 @@ class TestSolve(utt.InferShapeTester):
 
 
 class TestSolveTriangular(utt.InferShapeTester):
-    @pytest.mark.parametrize("b_shape", [(5, 1), (5,)])
-    def test_infer_shape(self, b_shape):
+    @pytest.mark.parametrize(
+        "a_shape, b_shape",
+        [
+            ((5, 5), (5,)),
+            ((5, 5), (5, 1)),
+            ((2, 5, 5), (1, 5)),
+            ((3, 5, 5), (1, 5, 3)),
+        ],
+    )
+    def test_infer_shape(self, a_shape, b_shape):
         rng = np.random.default_rng(utt.fetch_seed())
-        A = matrix()
+        A = matrix() if len(a_shape) == 2 else tensor3()
         b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
         b = at.as_tensor_variable(b_val).type()
         self._compile_and_check(
             [A, b],
             [solve_triangular(A, b)],
             [
-                np.asarray(rng.random((5, 5)), dtype=config.floatX),
+                np.asarray(rng.random((a_shape)), dtype=config.floatX),
                 b_val,
             ],
             SolveTriangular,
