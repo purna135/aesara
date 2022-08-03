@@ -18,6 +18,15 @@ from aesara.tensor.var import TensorVariable
 logger = logging.getLogger(__name__)
 
 
+def _assert_stacked_2d(*arrays):
+    for a in arrays:
+        if a.ndim < 2:
+            raise ValueError(
+                "%d-dimensional array given. Array must be "
+                "at least two-dimensional" % a.ndim
+            )
+
+
 class Cholesky(Op):
     """
     Return a triangular matrix square root of positive semi-definite `x`.
@@ -39,33 +48,41 @@ class Cholesky(Op):
     # TODO: for specific dtypes
     # TODO: LAPACK wrapper with in-place behavior, for solve also
 
-    __props__ = ("lower", "destructive", "on_error")
+    __props__ = ("lower", "on_error")
 
     def __init__(self, lower=True, on_error="raise"):
         self.lower = lower
-        self.destructive = False
         if on_error not in ("raise", "nan"):
             raise ValueError('on_error must be one of "raise" or ""nan"')
         self.on_error = on_error
 
-    def infer_shape(self, fgraph, node, shapes):
-        return [shapes[0]]
-
     def make_node(self, x):
         x = as_tensor_variable(x)
-        assert x.ndim == 2
-        return Apply(self, [x], [x.type()])
+        _assert_stacked_2d(x)
+
+        # Infer dtype by solving the most simple case with 1x1 matrices
+        o_dtype = scipy.linalg.cholesky(np.eye(1).astype(x.dtype)).dtype
+        out = tensor(shape=x.broadcastable, dtype=o_dtype)
+        return Apply(self, [x], [out])
 
     def perform(self, node, inputs, outputs):
         x = inputs[0]
         z = outputs[0]
+        chol_vfunc = np.vectorize(
+            scipy.linalg.cholesky,
+            excluded={"lower", "overwrite_a", "check_finite"},
+            signature="(m,m)->(m,m)",
+        )
         try:
-            z[0] = scipy.linalg.cholesky(x, lower=self.lower).astype(x.dtype)
+            z[0] = chol_vfunc(x, lower=self.lower)
         except scipy.linalg.LinAlgError:
             if self.on_error == "raise":
                 raise
             else:
                 z[0] = (np.zeros(x.shape) * np.nan).astype(x.dtype)
+
+    def infer_shape(self, fgraph, node, shapes):
+        return [shapes[0]]
 
     def L_op(self, inputs, outputs, gradients):
         """
@@ -92,8 +109,8 @@ class Cholesky(Op):
 
         # deal with upper triangular by converting to lower triangular
         if not self.lower:
-            chol_x = chol_x.T
-            dz = dz.T
+            chol_x = at.swapaxes(chol_x, -1, -2)
+            dz = at.swapaxes(dz, -1, -2)
 
         def tril_and_halve_diagonal(mtx):
             """Extracts lower triangle of square matrix and halves diagonal."""
@@ -102,17 +119,25 @@ class Cholesky(Op):
         def conjugate_solve_triangular(outer, inner):
             """Computes L^{-T} P L^{-1} for lower-triangular L."""
             return solve_upper_triangular(
-                outer.T, solve_upper_triangular(outer.T, inner.T).T
+                at.swapaxes(outer, -1, -2),
+                at.swapaxes(
+                    solve_upper_triangular(
+                        at.swapaxes(outer, -1, -2),
+                        at.swapaxes(inner, -1, -2),
+                    ),
+                    -1,
+                    -2,
+                ),
             )
 
         s = conjugate_solve_triangular(
-            chol_x, tril_and_halve_diagonal(chol_x.T.dot(dz))
+            chol_x, tril_and_halve_diagonal(at.swapaxes(chol_x, -1, -2) @ dz)
         )
 
         if self.lower:
-            grad = at.tril(s + s.T) - at.diag(at.diagonal(s))
+            grad = at.tril(s + at.swapaxes(s, -1, -2)) - at.diag(at.diagonal(s))
         else:
-            grad = at.triu(s + s.T) - at.diag(at.diagonal(s))
+            grad = at.triu(s + at.swapaxes(s, -1, -2)) - at.diag(at.diagonal(s))
 
         if self.on_error == "nan":
             return [at.switch(ok, grad, np.nan)]
