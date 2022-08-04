@@ -1,7 +1,6 @@
 import itertools
 
 import numpy as np
-import numpy.linalg
 import pytest
 import scipy
 
@@ -16,7 +15,6 @@ from aesara.tensor.slinalg import (
     Solve,
     SolveBase,
     SolveTriangular,
-    cho_solve,
     cholesky,
     eigvalsh,
     expm,
@@ -24,7 +22,7 @@ from aesara.tensor.slinalg import (
     solve,
     solve_triangular,
 )
-from aesara.tensor.type import dmatrix, matrix, tensor, tensor3, vector
+from aesara.tensor.type import dmatrix, matrix, tensor, tensor3
 from tests import unittest_tools as utt
 
 
@@ -262,25 +260,25 @@ class TestSolve(utt.InferShapeTester):
         assert np.allclose(solve_vfunc(A_val, b_val), gen_solve_func(A_val, b_val))
 
     @pytest.mark.parametrize(
-        "m, n, assume_a, lower",
+        "a_shape, b_shape, assume_a, lower",
         [
-            (5, None, "gen", False),
-            (5, None, "gen", True),
-            (4, 2, "gen", False),
-            (4, 2, "gen", True),
+            ((2, 2), (2,), "gen", False),
+            ((2, 2), (2,), "gen", True),
+            ((3, 3), (3, 1), "gen", True),
+            ((2, 3, 3), (2, 3), "gen", False),
+            ((2, 3, 3), (1, 3), "gen", False),
+            ((3, 5, 5), (1, 5, 3), "gen", True),
         ],
     )
-    def test_solve_grad(self, m, n, assume_a, lower):
+    def test_solve_grad(self, a_shape, b_shape, assume_a, lower):
         rng = np.random.default_rng(utt.fetch_seed())
 
         # Ensure diagonal elements of `A` are relatively large to avoid
         # numerical precision issues
-        A_val = (rng.normal(size=(m, m)) * 0.5 + np.eye(m)).astype(config.floatX)
-
-        if n is None:
-            b_val = rng.normal(size=m).astype(config.floatX)
-        else:
-            b_val = rng.normal(size=(m, n)).astype(config.floatX)
+        A_val = (rng.normal(size=a_shape) * 0.5 + np.eye(a_shape[-1])).astype(
+            config.floatX
+        )
+        b_val = rng.normal(size=b_shape).astype(config.floatX)
 
         eps = None
         if config.floatX == "float64":
@@ -320,12 +318,8 @@ class TestSolveTriangular(utt.InferShapeTester):
         "a_shape, b_shape, lower",
         [
             ((5, 5), (5,), True),
-            ((5, 5), (5, 1), True),
-            ((2, 5, 5), (1, 5), True),
-            ((3, 5, 5), (1, 5, 3), True),
-            ((5, 5), (5,), False),
             ((5, 5), (5, 1), False),
-            ((2, 5, 5), (1, 5), False),
+            ((2, 5, 5), (1, 5), True),
             ((3, 5, 5), (1, 5, 3), False),
         ],
     )
@@ -367,25 +361,25 @@ class TestSolveTriangular(utt.InferShapeTester):
         )
 
     @pytest.mark.parametrize(
-        "m, n, lower",
+        "a_shape, b_shape, lower",
         [
-            (5, None, False),
-            (5, None, True),
-            (4, 2, False),
-            (4, 2, True),
+            ((2, 2), (2,), False),
+            ((2, 2), (2,), True),
+            ((3, 3), (3, 1), True),
+            ((2, 3, 3), (2, 3), False),
+            ((2, 3, 3), (1, 3), False),
+            ((3, 5, 5), (1, 5, 3), True),
         ],
     )
-    def test_solve_grad(self, m, n, lower):
+    def test_solve_grad(self, a_shape, b_shape, lower):
         rng = np.random.default_rng(utt.fetch_seed())
 
         # Ensure diagonal elements of `A` are relatively large to avoid
         # numerical precision issues
-        A_val = (rng.normal(size=(m, m)) * 0.5 + np.eye(m)).astype(config.floatX)
-
-        if n is None:
-            b_val = rng.normal(size=m).astype(config.floatX)
-        else:
-            b_val = rng.normal(size=(m, n)).astype(config.floatX)
+        A_val = (rng.normal(size=a_shape) * 0.5 + np.eye(a_shape[-1])).astype(
+            config.floatX
+        )
+        b_val = rng.normal(size=b_shape).astype(config.floatX)
 
         eps = None
         if config.floatX == "float64":
@@ -405,56 +399,62 @@ class TestCholeskySolve(utt.InferShapeTester):
     def test_repr(self):
         assert repr(CholeskySolve()) == "CholeskySolve{(True, True)}"
 
-    def test_infer_shape(self):
+    @pytest.mark.parametrize(
+        "a_shape, b_shape",
+        [
+            ((5, 5), (5,)),
+            ((5, 5), (5, 1)),
+            ((2, 5, 5), (1, 5)),
+            ((3, 5, 5), (1, 5, 3)),
+        ],
+    )
+    def test_infer_shape(self, a_shape, b_shape):
         rng = np.random.default_rng(utt.fetch_seed())
-        A = matrix()
-        b = matrix()
+        A = matrix() if len(a_shape) == 2 else tensor3()
+        A_val = np.asarray(rng.random(a_shape), dtype=config.floatX)
+
+        b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
+        b = at.as_tensor_variable(b_val).type()
+
         self._compile_and_check(
             [A, b],  # aesara.function inputs
             [self.op(A, b)],  # aesara.function outputs
             # A must be square
-            [
-                np.asarray(rng.random((5, 5)), dtype=config.floatX),
-                np.asarray(rng.random((5, 1)), dtype=config.floatX),
-            ],
-            self.op_class,
-            warn=False,
-        )
-        rng = np.random.default_rng(utt.fetch_seed())
-        A = matrix()
-        b = vector()
-        self._compile_and_check(
-            [A, b],  # aesara.function inputs
-            [self.op(A, b)],  # aesara.function outputs
-            # A must be square
-            [
-                np.asarray(rng.random((5, 5)), dtype=config.floatX),
-                np.asarray(rng.random((5)), dtype=config.floatX),
-            ],
+            [A_val, b_val],
             self.op_class,
             warn=False,
         )
 
-    def test_solve_correctness(self):
+    @pytest.mark.parametrize(
+        "a_shape, b_shape",
+        [
+            ((5, 5), (5,)),
+            ((5, 5), (5, 1)),
+            ((2, 5, 5), (1, 5)),
+            ((3, 5, 5), (1, 5, 3)),
+        ],
+    )
+    def test_solve_correctness(self, a_shape, b_shape):
         rng = np.random.default_rng(utt.fetch_seed())
-        A = matrix()
-        b = matrix()
+        A = matrix() if len(a_shape) == 2 else tensor3()
+        A_val = np.tril(np.asarray(rng.random(a_shape), dtype=config.floatX))
+
+        b_val = np.asarray(rng.random(b_shape), dtype=config.floatX)
+        b = at.as_tensor_variable(b_val).type()
+
         y = self.op(A, b)
         cho_solve_lower_func = aesara.function([A, b], y)
 
         y = self.op_upper(A, b)
         cho_solve_upper_func = aesara.function([A, b], y)
 
-        b_val = np.asarray(rng.random((5, 1)), dtype=config.floatX)
-
-        A_val = np.tril(np.asarray(rng.random((5, 5)), dtype=config.floatX))
-
+        # TODO: vectorize cholesky solve
         assert np.allclose(
             scipy.linalg.cho_solve((A_val, True), b_val),
             cho_solve_lower_func(A_val, b_val),
         )
 
-        A_val = np.triu(np.asarray(rng.random((5, 5)), dtype=config.floatX))
+        A_val = np.triu(np.asarray(rng.random(a_shape), dtype=config.floatX))
         assert np.allclose(
             scipy.linalg.cho_solve((A_val, False), b_val),
             cho_solve_upper_func(A_val, b_val),
@@ -489,21 +489,22 @@ class TestCholeskySolve(utt.InferShapeTester):
             assert x.dtype == x_result.dtype
 
 
-def test_cho_solve():
-    rng = np.random.default_rng(utt.fetch_seed())
-    A = matrix()
-    b = matrix()
-    y = cho_solve((A, True), b)
-    cho_solve_lower_func = aesara.function([A, b], y)
+# TODO: Remove this test, this test is already cover in TestCholeskySolve
+# def test_cho_solve():
+#     rng = np.random.default_rng(utt.fetch_seed())
+#     A = matrix()
+#     b = matrix()
+#     y = cho_solve((A, True), b)
+#     cho_solve_lower_func = aesara.function([A, b], y)
 
-    b_val = np.asarray(rng.random((5, 1)), dtype=config.floatX)
+#     b_val = np.asarray(rng.random((5, 1)), dtype=config.floatX)
 
-    A_val = np.tril(np.asarray(rng.random((5, 5)), dtype=config.floatX))
+#     A_val = np.tril(np.asarray(rng.random((5, 5)), dtype=config.floatX))
 
-    assert np.allclose(
-        scipy.linalg.cho_solve((A_val, True), b_val),
-        cho_solve_lower_func(A_val, b_val),
-    )
+#     assert np.allclose(
+#         scipy.linalg.cho_solve((A_val, True), b_val),
+#         cho_solve_lower_func(A_val, b_val),
+#     )
 
 
 def test_expm():

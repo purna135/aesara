@@ -130,9 +130,9 @@ class SolveBase(Op):
                 for k in self.__props__
             }
         )
-        b_bar = trans_solve_op(A.T, c_bar)
+        b_bar = trans_solve_op(at.swapaxes(A, -1, -2), c_bar)
         # force outer product if vector second input
-        A_bar = -atm.outer(b_bar, c) if c.ndim == 1 else -b_bar.dot(c.T)
+        A_bar = -atm.outer(b_bar, c) if c.ndim == 1 else -b_bar @ at.swapaxes(c, -1, -2)
 
         return [A_bar, b_bar]
 
@@ -326,9 +326,13 @@ def solve(a, b, assume_a="gen", lower=False, check_finite=True):
     )(a, b)
 
 
+# TODO: These are deprecated; emit a warning
 solve_lower_triangular = SolveTriangular(lower=True)
 solve_upper_triangular = SolveTriangular(lower=False)
 solve_symmetric = Solve(assume_a="sym")
+
+# TODO: Optimizations to replace multiplication by matrix inverse
+#      with solve() Op (still unwritten)
 
 
 class Cholesky(Op):
@@ -536,17 +540,17 @@ class CholeskySolve(SolveBase):
     def perform(self, node, inputs, output_storage):
         C, b = inputs
 
-        signature = "(m,m),(m,k)->(m,k)"
-        if len(b.shape) == len(C.shape) - 1:
-            signature = "(m,m),(m)->(m)"
+        # signature = "(m,m),(m,k)->(m,k)"
+        # if len(b.shape) == len(C.shape) - 1:
+        #     signature = "(m,m),(m)->(m)"
 
-        cho_solve_vfunc = np.vectorize(
-            scipy.linalg.cho_solve,
-            excluded={"lower", "check_finite"},
-            signature=signature,
-        )
+        # cho_solve_vfunc = np.vectorize(
+        #     scipy.linalg.cho_solve,
+        #     excluded={"lower", "check_finite"},
+        #     signature=signature,
+        # )
 
-        rval = cho_solve_vfunc(
+        rval = scipy.linalg.cho_solve(
             (C, self.lower),
             b,
             check_finite=self.check_finite,
