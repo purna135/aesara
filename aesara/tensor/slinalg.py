@@ -1,5 +1,6 @@
 import logging
 import warnings
+from itertools import zip_longest
 from typing import Union
 
 import numpy as np
@@ -11,6 +12,7 @@ from aesara.graph.op import Op
 from aesara.tensor import as_tensor_variable
 from aesara.tensor import basic as at
 from aesara.tensor import math as atm
+from aesara.tensor.extra_ops import broadcast_shape
 from aesara.tensor.type import matrix, tensor, vector
 from aesara.tensor.var import TensorVariable
 
@@ -18,247 +20,13 @@ from aesara.tensor.var import TensorVariable
 logger = logging.getLogger(__name__)
 
 
-class Cholesky(Op):
-    """
-    Return a triangular matrix square root of positive semi-definite `x`.
-
-    L = cholesky(X, lower=True) implies dot(L, L.T) == X.
-
-    Parameters
-    ----------
-    lower : bool, default=True
-        Whether to return the lower or upper cholesky factor
-    on_error : ['raise', 'nan']
-        If on_error is set to 'raise', this Op will raise a
-        `scipy.linalg.LinAlgError` if the matrix is not positive definite.
-        If on_error is set to 'nan', it will return a matrix containing
-        nans instead.
-    """
-
-    # TODO: inplace
-    # TODO: for specific dtypes
-    # TODO: LAPACK wrapper with in-place behavior, for solve also
-
-    __props__ = ("lower", "destructive", "on_error")
-
-    def __init__(self, lower=True, on_error="raise"):
-        self.lower = lower
-        self.destructive = False
-        if on_error not in ("raise", "nan"):
-            raise ValueError('on_error must be one of "raise" or ""nan"')
-        self.on_error = on_error
-
-    def infer_shape(self, fgraph, node, shapes):
-        return [shapes[0]]
-
-    def make_node(self, x):
-        x = as_tensor_variable(x)
-        assert x.ndim == 2
-        return Apply(self, [x], [x.type()])
-
-    def perform(self, node, inputs, outputs):
-        x = inputs[0]
-        z = outputs[0]
-        try:
-            z[0] = scipy.linalg.cholesky(x, lower=self.lower).astype(x.dtype)
-        except scipy.linalg.LinAlgError:
-            if self.on_error == "raise":
-                raise
-            else:
-                z[0] = (np.zeros(x.shape) * np.nan).astype(x.dtype)
-
-    def L_op(self, inputs, outputs, gradients):
-        """
-        Cholesky decomposition reverse-mode gradient update.
-
-        Symbolic expression for reverse-mode Cholesky gradient taken from [#]_
-
-        References
-        ----------
-        .. [#] I. Murray, "Differentiation of the Cholesky decomposition",
-           http://arxiv.org/abs/1602.07527
-
-        """
-
-        dz = gradients[0]
-        chol_x = outputs[0]
-
-        # Replace the cholesky decomposition with 1 if there are nans
-        # or solve_upper_triangular will throw a ValueError.
-        if self.on_error == "nan":
-            ok = ~atm.any(atm.isnan(chol_x))
-            chol_x = at.switch(ok, chol_x, 1)
-            dz = at.switch(ok, dz, 1)
-
-        # deal with upper triangular by converting to lower triangular
-        if not self.lower:
-            chol_x = chol_x.T
-            dz = dz.T
-
-        def tril_and_halve_diagonal(mtx):
-            """Extracts lower triangle of square matrix and halves diagonal."""
-            return at.tril(mtx) - at.diag(at.diagonal(mtx) / 2.0)
-
-        def conjugate_solve_triangular(outer, inner):
-            """Computes L^{-T} P L^{-1} for lower-triangular L."""
-            return solve_upper_triangular(
-                outer.T, solve_upper_triangular(outer.T, inner.T).T
+def _assert_stacked_2d(*arrays):
+    for a in arrays:
+        if a.ndim < 2:
+            raise ValueError(
+                "%d-dimensional array given. Array must be "
+                "at least two-dimensional" % a.ndim
             )
-
-        s = conjugate_solve_triangular(
-            chol_x, tril_and_halve_diagonal(chol_x.T.dot(dz))
-        )
-
-        if self.lower:
-            grad = at.tril(s + s.T) - at.diag(at.diagonal(s))
-        else:
-            grad = at.triu(s + s.T) - at.diag(at.diagonal(s))
-
-        if self.on_error == "nan":
-            return [at.switch(ok, grad, np.nan)]
-        else:
-            return [grad]
-
-
-cholesky = Cholesky()
-
-
-class CholeskyGrad(Op):
-    """"""
-
-    __props__ = ("lower", "destructive")
-
-    def __init__(self, lower=True):
-        self.lower = lower
-        self.destructive = False
-
-    def make_node(self, x, l, dz):
-        x = as_tensor_variable(x)
-        l = as_tensor_variable(l)
-        dz = as_tensor_variable(dz)
-        assert x.ndim == 2
-        assert l.ndim == 2
-        assert dz.ndim == 2
-        assert (
-            l.owner.op.lower == self.lower
-        ), "lower/upper mismatch between Cholesky op and CholeskyGrad op"
-        return Apply(self, [x, l, dz], [x.type()])
-
-    def perform(self, node, inputs, outputs):
-        """
-        Implements the "reverse-mode" gradient [#]_ for the
-        Cholesky factorization of a positive-definite matrix.
-
-        References
-        ----------
-        .. [#] S. P. Smith. "Differentiation of the Cholesky Algorithm".
-           Journal of Computational and Graphical Statistics,
-           Vol. 4, No. 2 (Jun.,1995), pp. 134-147
-           http://www.jstor.org/stable/1390762
-
-        """
-        x = inputs[0]
-        L = inputs[1]
-        dz = inputs[2]
-        dx = outputs[0]
-        N = x.shape[0]
-        if self.lower:
-            F = np.tril(dz)
-            for k in range(N - 1, -1, -1):
-                for j in range(k + 1, N):
-                    for i in range(j, N):
-                        F[i, k] -= F[i, j] * L[j, k]
-                        F[j, k] -= F[i, j] * L[i, k]
-                for j in range(k + 1, N):
-                    F[j, k] /= L[k, k]
-                    F[k, k] -= L[j, k] * F[j, k]
-                F[k, k] /= 2 * L[k, k]
-        else:
-            F = np.triu(dz)
-            for k in range(N - 1, -1, -1):
-                for j in range(k + 1, N):
-                    for i in range(j, N):
-                        F[k, i] -= F[j, i] * L[k, j]
-                        F[k, j] -= F[j, i] * L[k, i]
-                for j in range(k + 1, N):
-                    F[k, j] /= L[k, k]
-                    F[k, k] -= L[k, j] * F[k, j]
-                F[k, k] /= 2 * L[k, k]
-        dx[0] = F
-
-    def infer_shape(self, fgraph, node, shapes):
-        return [shapes[0]]
-
-
-class CholeskySolve(Op):
-
-    __props__ = ("lower", "check_finite")
-
-    def __init__(
-        self,
-        lower=True,
-        check_finite=True,
-    ):
-        self.lower = lower
-        self.check_finite = check_finite
-
-    def __repr__(self):
-        return "CholeskySolve{%s}" % str(self._props())
-
-    def make_node(self, C, b):
-        C = as_tensor_variable(C)
-        b = as_tensor_variable(b)
-        assert C.ndim == 2
-        assert b.ndim in (1, 2)
-
-        # infer dtype by solving the most simple
-        # case with (1, 1) matrices
-        o_dtype = scipy.linalg.solve(
-            np.eye(1).astype(C.dtype), np.eye(1).astype(b.dtype)
-        ).dtype
-        x = tensor(shape=b.broadcastable, dtype=o_dtype)
-        return Apply(self, [C, b], [x])
-
-    def perform(self, node, inputs, output_storage):
-        C, b = inputs
-        rval = scipy.linalg.cho_solve(
-            (C, self.lower),
-            b,
-            check_finite=self.check_finite,
-        )
-
-        output_storage[0][0] = rval
-
-    def infer_shape(self, fgraph, node, shapes):
-        Cshape, Bshape = shapes
-        rows = Cshape[1]
-        if len(Bshape) == 1:  # b is a Vector
-            return [(rows,)]
-        else:
-            cols = Bshape[1]  # b is a Matrix
-            return [(rows, cols)]
-
-
-cho_solve = CholeskySolve()
-
-
-def cho_solve(c_and_lower, b, check_finite=True):
-    """Solve the linear equations A x = b, given the Cholesky factorization of A.
-
-    Parameters
-    ----------
-    (c, lower) : tuple, (array, bool)
-        Cholesky factorization of a, as given by cho_factor
-    b : array
-        Right-hand side
-    check_finite : bool, optional
-        Whether to check that the input matrices contain only finite numbers.
-        Disabling may give a performance gain, but may result in problems
-        (crashes, non-termination) if the inputs do contain infinities or NaNs.
-    """
-
-    A, lower = c_and_lower
-    return CholeskySolve(lower=lower, check_finite=check_finite)(A, b)
 
 
 class SolveBase(Op):
@@ -277,33 +45,64 @@ class SolveBase(Op):
         self.lower = lower
         self.check_finite = check_finite
 
-    def perform(self, node, inputs, outputs):
-        pass
-
     def make_node(self, A, b):
         A = as_tensor_variable(A)
         b = as_tensor_variable(b)
 
-        if A.ndim != 2:
-            raise ValueError(f"`A` must be a matrix; got {A.type} instead.")
-        if b.ndim not in (1, 2):
-            raise ValueError(f"`b` must be a matrix or a vector; got {b.type} instead.")
+        _assert_stacked_2d(A)
+
+        # We use the b = (..., M,) logic, only if the number of extra dimensions match
+        # exactly i.e when b.ndim == a.ndim - 1, else we will use b = (..., M, K) logic
+        if b.ndim == A.ndim - 1:
+            # a : (..., M, M), b : (..., M) -> (..., M)
+            a_batch = A.broadcastable[:-2]
+            b_batch = b.broadcastable[:-1]
+            broadcastable = [
+                aa and bb
+                for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)
+            ]
+            out_shape = broadcastable[::-1] + list(b.broadcastable[-1:])
+        else:
+            # a : (..., M, M), b : (..., M, K) -> (..., M, K)
+            a_batch = A.broadcastable[:-2]
+            b_batch = b.broadcastable[:-2]
+            broadcastable = [
+                aa and bb
+                for aa, bb in zip_longest(a_batch[::-1], b_batch[::-1], fillvalue=True)
+            ]
+            out_shape = broadcastable[::-1] + list(b.broadcastable[-2:])
 
         # Infer dtype by solving the most simple case with 1x1 matrices
-        o_dtype = scipy.linalg.solve(
+        out_dtype = scipy.linalg.solve(
             np.eye(1).astype(A.dtype), np.eye(1).astype(b.dtype)
         ).dtype
-        x = tensor(shape=b.broadcastable, dtype=o_dtype)
+
+        x = tensor(shape=out_shape, dtype=out_dtype)
         return Apply(self, [A, b], [x])
 
+    def perform(self, node, inputs, outputs):
+        pass
+
     def infer_shape(self, fgraph, node, shapes):
-        Ashape, Bshape = shapes
-        rows = Ashape[1]
-        if len(Bshape) == 1:
-            return [(rows,)]
+        a_shape = shapes[0]
+        b_shape = shapes[1]
+
+        if len(b_shape) == len(a_shape) - 1:
+            # a : (..., M, M), b : (..., M) -> (..., M)
+            a_batch_shape = a_shape[:-2]
+            b_batch_shape = b_shape[:-1]
+            batch_shape = broadcast_shape(
+                a_batch_shape, b_batch_shape, arrays_are_shapes=True
+            )
+            return [batch_shape + b_shape[-1:]]
         else:
-            cols = Bshape[1]
-            return [(rows, cols)]
+            # a : (..., M, M), b : (..., M, K) -> (..., M, K)
+            a_batch_shape = a_shape[:-2]
+            b_batch_shape = b_shape[:-2]
+            batch_shape = broadcast_shape(
+                a_batch_shape, b_batch_shape, arrays_are_shapes=True
+            )
+            return [batch_shape + b_shape[-2:]]
 
     def L_op(self, inputs, outputs, output_gradients):
         r"""Reverse-mode gradient updates for matrix solve operation :math:`c = A^{-1} b`.
@@ -331,9 +130,9 @@ class SolveBase(Op):
                 for k in self.__props__
             }
         )
-        b_bar = trans_solve_op(A.T, c_bar)
+        b_bar = trans_solve_op(at.swapaxes(A, -1, -2), c_bar)
         # force outer product if vector second input
-        A_bar = -atm.outer(b_bar, c) if c.ndim == 1 else -b_bar.dot(c.T)
+        A_bar = -atm.outer(b_bar, c) if c.ndim == 1 else -b_bar @ at.swapaxes(c, -1, -2)
 
         return [A_bar, b_bar]
 
@@ -364,7 +163,17 @@ class SolveTriangular(SolveBase):
 
     def perform(self, node, inputs, outputs):
         A, b = inputs
-        outputs[0][0] = scipy.linalg.solve_triangular(
+
+        signature = "(m,m),(m,k)->(m,k)"
+        if len(b.shape) == len(A.shape) - 1:
+            signature = "(m,m),(m)->(m)"
+
+        solve_triangular_vfunc = np.vectorize(
+            scipy.linalg.solve_triangular,
+            excluded={"lower", "trans", "unit_diagonal", "check_finite"},
+            signature=signature,
+        )
+        outputs[0][0] = solve_triangular_vfunc(
             A,
             b,
             lower=self.lower,
@@ -450,9 +259,19 @@ class Solve(SolveBase):
         self.assume_a = assume_a
 
     def perform(self, node, inputs, outputs):
-        a, b = inputs
-        outputs[0][0] = scipy.linalg.solve(
-            a=a,
+        A, b = inputs
+
+        signature = "(m,m),(m,k)->(m,k)"
+        if len(b.shape) == len(A.shape) - 1:
+            signature = "(m,m),(m)->(m)"
+
+        solve_vfunc = np.vectorize(
+            scipy.linalg.solve,
+            excluded={"lower", "check_finite", "assume_a"},
+            signature=signature,
+        )
+        outputs[0][0] = solve_vfunc(
+            a=A,
             b=b,
             lower=self.lower,
             check_finite=self.check_finite,
@@ -514,6 +333,185 @@ solve_symmetric = Solve(assume_a="sym")
 
 # TODO: Optimizations to replace multiplication by matrix inverse
 #      with solve() Op (still unwritten)
+
+
+class Cholesky(Op):
+    """
+    Return a triangular matrix square root of positive semi-definite `x`.
+
+    L = cholesky(X, lower=True) implies dot(L, L.T) == X.
+
+    Parameters
+    ----------
+    lower : bool, default=True
+        Whether to return the lower or upper cholesky factor
+    on_error : ['raise', 'nan']
+        If on_error is set to 'raise', this Op will raise a
+        `scipy.linalg.LinAlgError` if the matrix is not positive definite.
+        If on_error is set to 'nan', it will return a matrix containing
+        nans instead.
+    """
+
+    # TODO: inplace
+    # TODO: for specific dtypes
+    # TODO: LAPACK wrapper with in-place behavior, for solve also
+
+    __props__ = ("lower", "on_error")
+
+    def __init__(self, lower=True, on_error="raise"):
+        self.lower = lower
+        if on_error not in ("raise", "nan"):
+            raise ValueError('on_error must be one of "raise" or ""nan"')
+        self.on_error = on_error
+
+    def make_node(self, A):
+        A = as_tensor_variable(A)
+        _assert_stacked_2d(A)
+
+        # Infer dtype by solving the most simple case with 1x1 matrices
+        out_dtype = scipy.linalg.cholesky(np.eye(1).astype(A.dtype)).dtype
+        x = tensor(shape=A.broadcastable, dtype=out_dtype)
+        return Apply(self, [A], [x])
+
+    def perform(self, node, inputs, outputs):
+        A = inputs[0]
+        z = outputs[0]
+        cholesky_vfunc = np.vectorize(
+            scipy.linalg.cholesky,
+            excluded={"lower"},
+            signature="(m,m)->(m,m)",
+        )
+        try:
+            z[0] = cholesky_vfunc(A, lower=self.lower)
+        except scipy.linalg.LinAlgError:
+            if self.on_error == "raise":
+                raise
+            else:
+                z[0] = (np.zeros(A.shape) * np.nan).astype(A.dtype)
+
+    def infer_shape(self, fgraph, node, shapes):
+        return [shapes[0]]
+
+    def L_op(self, inputs, outputs, gradients):
+        """
+        Cholesky decomposition reverse-mode gradient update.
+
+        Symbolic expression for reverse-mode Cholesky gradient taken from [#]_
+
+        References
+        ----------
+        .. [#] I. Murray, "Differentiation of the Cholesky decomposition",
+           http://arxiv.org/abs/1602.07527
+
+        """
+
+        dz = gradients[0]
+        chol_x = outputs[0]
+
+        # Replace the cholesky decomposition with 1 if there are nans
+        # or solve_upper_triangular will throw a ValueError.
+        if self.on_error == "nan":
+            ok = ~atm.any(atm.isnan(chol_x))
+            chol_x = at.switch(ok, chol_x, 1)
+            dz = at.switch(ok, dz, 1)
+
+        # deal with upper triangular by converting to lower triangular
+        if not self.lower:
+            chol_x = at.swapaxes(chol_x, -1, -2)
+            dz = at.swapaxes(dz, -1, -2)
+
+        def tril_and_halve_diagonal(mtx):
+            """Extracts lower triangle of square matrix and halves diagonal."""
+            return at.tril(mtx) - at.diag(at.diagonal(mtx) / 2.0)
+
+        def conjugate_solve_triangular(outer, inner):
+            """Computes L^{-T} P L^{-1} for lower-triangular L."""
+            return solve_upper_triangular(
+                at.swapaxes(outer, -1, -2),
+                at.swapaxes(
+                    solve_upper_triangular(
+                        at.swapaxes(outer, -1, -2),
+                        at.swapaxes(inner, -1, -2),
+                    ),
+                    -1,
+                    -2,
+                ),
+            )
+
+        s = conjugate_solve_triangular(
+            chol_x, tril_and_halve_diagonal(at.swapaxes(chol_x, -1, -2) @ dz)
+        )
+
+        if self.lower:
+            grad = at.tril(s + at.swapaxes(s, -1, -2)) - at.diag(at.diagonal(s))
+        else:
+            grad = at.triu(s + at.swapaxes(s, -1, -2)) - at.diag(at.diagonal(s))
+
+        if self.on_error == "nan":
+            return [at.switch(ok, grad, np.nan)]
+        else:
+            return [grad]
+
+
+cholesky = Cholesky()
+
+
+class CholeskySolve(SolveBase):
+
+    __props__ = ("lower", "check_finite")
+
+    def __init__(
+        self,
+        lower=True,
+        check_finite=True,
+    ):
+        super().__init__(lower=lower, check_finite=check_finite)
+
+    def __repr__(self):
+        return "CholeskySolve{%s}" % str(self._props())
+
+    def perform(self, node, inputs, output_storage):
+        C, b = inputs
+
+        # signature = "(m,m),(m,k)->(m,k)"
+        # if len(b.shape) == len(C.shape) - 1:
+        #     signature = "(m,m),(m)->(m)"
+
+        # cho_solve_vfunc = np.vectorize(
+        #     scipy.linalg.cho_solve,
+        #     excluded={"lower", "check_finite"},
+        #     signature=signature,
+        # )
+
+        rval = scipy.linalg.cho_solve(
+            (C, self.lower),
+            b,
+            check_finite=self.check_finite,
+        )
+
+        output_storage[0][0] = rval
+
+
+cho_solve = CholeskySolve()
+
+
+def cho_solve(c_and_lower, b, check_finite=True):
+    """Solve the linear equations A x = b, given the Cholesky factorization of A.
+
+    Parameters
+    ----------
+    (c, lower) : tuple, (array, bool)
+        Cholesky factorization of a, as given by cho_factor
+    b : array
+        Right-hand side
+    check_finite : bool, optional
+        Whether to check that the input matrices contain only finite numbers.
+        Disabling may give a performance gain, but may result in problems
+        (crashes, non-termination) if the inputs do contain infinities or NaNs.
+    """
+
+    A, lower = c_and_lower
+    return CholeskySolve(lower=lower, check_finite=check_finite)(A, b)
 
 
 class Eigvalsh(Op):
