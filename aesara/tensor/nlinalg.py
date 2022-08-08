@@ -1,3 +1,4 @@
+import logging
 from functools import partial
 from typing import Tuple, Union
 
@@ -9,8 +10,11 @@ from aesara.graph.basic import Apply
 from aesara.graph.op import Op
 from aesara.tensor import basic as at
 from aesara.tensor import math as tm
+
 from aesara.tensor.basic import as_tensor_variable, extract_diag, swapaxes
 from aesara.tensor.type import dvector, lscalar, matrix, scalar, vector
+
+logger = logging.getLogger(__name__)
 
 
 class MatrixPinv(Op):
@@ -276,26 +280,40 @@ class Eigh(Eig):
     __props__ = ("UPLO",)
 
     def __init__(self, UPLO="L"):
-        assert UPLO in ("L", "U")
+        if UPLO not in ("L", "U"):
+            raise ValueError("UPLO argument must be 'L' or 'U'")
         self.UPLO = UPLO
 
     def make_node(self, x):
         x = as_tensor_variable(x)
-        assert x.ndim == 2
-        # Numpy's linalg.eigh may return either double or single
-        # presision eigenvalues depending on installed version of
-        # LAPACK.  Rather than trying to reproduce the (rather
-        # involved) logic, we just probe linalg.eigh with a trivial
-        # input.
-        w_dtype = self._numop([[np.dtype(x.dtype).type()]])[0].dtype.name
-        w = vector(dtype=w_dtype)
-        v = matrix(dtype=w_dtype)
+
+        # check for stacked 2d
+        if x.ndim < 2:
+            raise ValueError(
+                "%d-dimensional array given. Array must be "
+                "at least two-dimensional" % x.ndim
+            )
+
+        # Infer dtype by solving the most simple case with 1x1 matrices
+        np_result = self._numop(np.eye(1).astype(x.dtype))  # we will get w and v
+        w_dtype = np_result[0].dtype
+        v_dtype = np_result[1].dtype
+
+        w = tensor(shape=x.broadcastable[:-1], dtype=w_dtype)
+        v = tensor(shape=x.broadcastable, dtype=v_dtype)
+
         return Apply(self, [x], [w, v])
 
     def perform(self, node, inputs, outputs):
         (x,) = inputs
         (w, v) = outputs
         w[0], v[0] = self._numop(x, self.UPLO)
+
+    def infer_shape(self, fgraph, node, shapes):
+        x_shape = shapes[0]
+        w_shape = x_shape[:-1]
+        v_shape = x_shape
+        return [w_shape, v_shape]
 
     def grad(self, inputs, g_outputs):
         r"""The gradient function should return
@@ -405,6 +423,88 @@ class EighGrad(Op):
 
 
 def eigh(a, UPLO="L"):
+    """
+    Return the eigenvalues and eigenvectors of a complex Hermitian
+    (conjugate symmetric) or a real symmetric matrix.
+
+    Returns two objects, a 1-D array containing the eigenvalues of `a`, and
+    a 2-D square array or matrix (depending on the input type) of the
+    corresponding eigenvectors (in columns).
+
+    Parameters
+    ----------
+    a : (..., M, M) array
+        Hermitian or real symmetric matrices whose eigenvalues and
+        eigenvectors are to be computed.
+    UPLO : {'L', 'U'}, optional
+        Specifies whether the calculation is done with the lower triangular
+        part of `a` ('L', default) or the upper triangular part ('U').
+        Irrespective of this value only the real parts of the diagonal will
+        be considered in the computation to preserve the notion of a Hermitian
+        matrix. It therefore follows that the imaginary part of the diagonal
+        will always be treated as zero.
+
+    Returns
+    -------
+    w : (..., M) ndarray
+        The eigenvalues in ascending order, each repeated according to
+        its multiplicity.
+    v : {(..., M, M) ndarray, (..., M, M) matrix}
+        The column ``v[:, i]`` is the normalized eigenvector corresponding
+        to the eigenvalue ``w[i]``.  Will return a matrix object if `a` is
+        a matrix object.
+
+    Raises
+    ------
+    LinAlgError
+        If the eigenvalue computation does not converge.
+
+    See Also
+    --------
+    `eigvalsh <https://numpy.org/doc/stable/reference/generated/numpy.linalg.eigvalsh.html#numpy.linalg.eigvalsh>`_ :
+            eigenvalues of real symmetric or complex Hermitian
+            (conjugate symmetric) arrays.
+    `eig <https://numpy.org/doc/stable/reference/generated/numpy.linalg.eig.html#numpy.linalg.eig>`_ :
+            eigenvalues and right eigenvectors for non-symmetric arrays.
+    `eigvals <https://numpy.org/doc/stable/reference/generated/numpy.linalg.eigvals.html#numpy.linalg.eigvals>`_ :
+            eigenvalues of non-symmetric arrays.
+    `scipy.linalg.eigh <https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.eigh.html#scipy.linalg.eigh>`_ :
+            Similar function in SciPy (but also solves the
+            generalized eigenvalue problem).
+
+    Notes
+    -----
+    Broadcasting rules apply, see the `numpy.linalg <https://numpy.org/doc/stable/reference/routines.linalg.html#module-numpy.linalg>`_
+    documentation for details.
+
+    The eigenvalues/eigenvectors are computed using LAPACK routines ``_syevd``,
+    ``_heevd``.
+
+    The eigenvalues of real symmetric or complex Hermitian matrices are
+    always real. [1]_ The array `v` of (column) eigenvectors is unitary
+    and `a`, `w`, and `v` satisfy the equations
+    ``dot(a, v[:, i]) = w[i] * v[:, i]``.
+
+    References
+    ----------
+    .. [1] G. Strang, *Linear Algebra and Its Applications*, 2nd Ed., Orlando,
+           FL, Academic Press, Inc., 1980, pg. 222.
+
+    Examples
+    --------
+    >>> import aesata.tensor as at
+    >>> import numpy as np
+    >>> a = np.array([[1, -2j], [2j, 5]])
+    >>> a
+    array([[ 1.+0.j, -0.-2.j],
+           [ 0.+2.j,  5.+0.j]])
+    >>> w, v = at.linalg.eigh(a)
+    >>> w.eval(); v.eval()
+    array([0.17157288, 5.82842712])
+    array([[-0.92387953+0.j        , -0.38268343+0.j        ], # may vary
+           [ 0.        +0.38268343j,  0.        -0.92387953j]])
+    """
+
     return Eigh(UPLO)(a)
 
 
