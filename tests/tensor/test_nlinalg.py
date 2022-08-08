@@ -7,7 +7,6 @@ from numpy.testing import assert_array_almost_equal
 import aesara
 from aesara import function
 from aesara.configdefaults import config
-from aesara.graph.basic import Constant
 from aesara.tensor.math import _allclose
 from aesara.tensor.nlinalg import (
     SVD,
@@ -269,32 +268,33 @@ def test_inverse_grad():
     utt.verify_grad(matrix_inverse, [r], rng=np.random)
 
 
-def test_det():
+@pytest.mark.parametrize("a_shape", [(5, 5), (2, 3, 3)])
+def test_det(a_shape):
     rng = np.random.default_rng(utt.fetch_seed())
 
-    r = rng.standard_normal((5, 5)).astype(config.floatX)
-    x = matrix()
-    f = aesara.function([x], det(x))
-    assert np.allclose(np.linalg.det(r), f(r))
-
-    r = rng.standard_normal((2, 3, 3)).astype(config.floatX)
-    x = tensor3()
+    r = rng.standard_normal(a_shape).astype(config.floatX)
+    x = matrix() if len(a_shape) == 2 else tensor3()
     f = aesara.function([x], det(x))
     assert np.allclose(np.linalg.det(r), f(r))
 
 
-def test_det_grad():
+@pytest.mark.parametrize("a_shape", [(5, 5), (3, 5, 5)])
+def test_det_grad(a_shape):
     rng = np.random.default_rng(utt.fetch_seed())
 
-    r = rng.standard_normal((5, 5)).astype(config.floatX)
+    r = rng.standard_normal(a_shape).astype(config.floatX)
     utt.verify_grad(det, [r], rng=np.random)
 
 
-def test_det_shape():
-    x = matrix()
-    det_shape = det(x).shape
-    assert isinstance(det_shape, Constant)
-    assert tuple(det_shape.data) == ()
+@pytest.mark.parametrize("a_shape", [(5, 5), (3, 5, 5)])
+def test_det_shape(a_shape):
+    rng = np.random.default_rng(utt.fetch_seed())
+
+    r = rng.standard_normal(a_shape).astype(config.floatX)
+    x = matrix() if len(a_shape) == 2 else tensor3()
+    f = aesara.function([x], det(x))
+    det_shape = f(r).shape
+    assert np.allclose(np.linalg.det(r).shape, det_shape)
 
 
 def test_trace():
