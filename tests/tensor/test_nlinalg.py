@@ -7,6 +7,7 @@ from numpy.testing import assert_array_almost_equal
 import aesara
 from aesara import function
 from aesara.configdefaults import config
+from aesara.graph.basic import Constant
 from aesara.tensor.math import _allclose
 from aesara.tensor.nlinalg import (
     SVD,
@@ -256,33 +257,27 @@ def test_inverse_grad():
     utt.verify_grad(matrix_inverse, [r], rng=np.random)
 
 
-@pytest.mark.parametrize("a_shape", [(5, 5), (2, 3, 3)])
-def test_det(a_shape):
+def test_det():
     rng = np.random.default_rng(utt.fetch_seed())
 
-    r = rng.standard_normal(a_shape).astype(config.floatX)
-    x = matrix() if len(a_shape) == 2 else tensor3()
+    r = rng.standard_normal((5, 5)).astype(config.floatX)
+    x = matrix()
     f = aesara.function([x], det(x))
     assert np.allclose(np.linalg.det(r), f(r))
 
 
-@pytest.mark.parametrize("a_shape", [(5, 5), (3, 5, 5)])
-def test_det_grad(a_shape):
+def test_det_grad():
     rng = np.random.default_rng(utt.fetch_seed())
 
-    r = rng.standard_normal(a_shape).astype(config.floatX)
+    r = rng.standard_normal((5, 5)).astype(config.floatX)
     utt.verify_grad(det, [r], rng=np.random)
 
 
-@pytest.mark.parametrize("a_shape", [(5, 5), (3, 5, 5)])
-def test_det_shape(a_shape):
-    rng = np.random.default_rng(utt.fetch_seed())
-
-    r = rng.standard_normal(a_shape).astype(config.floatX)
-    x = matrix() if len(a_shape) == 2 else tensor3()
-    f = aesara.function([x], det(x))
-    det_shape = f(r).shape
-    assert np.allclose(np.linalg.det(r).shape, det_shape)
+def test_det_shape():
+    x = matrix()
+    det_shape = det(x).shape
+    assert isinstance(det_shape, Constant)
+    assert tuple(det_shape.data) == ()
 
 
 def test_trace():
@@ -351,6 +346,18 @@ class TestEigh(TestEig):
         assert_array_almost_equal(wu, wl)
         assert_array_almost_equal(vu * np.sign(vu[0, :]), vl * np.sign(vl[0, :]))
 
+        # test for batched data
+        a = np.full((2, 3, 3), np.eye(3)).astype(self.dtype)
+        w_at, v_at = self.op(a, "U")
+        w_np, v_np = np.linalg.eigh(a, "U")
+        assert np.allclose(w_at.eval(), w_np)
+        assert np.allclose(v_at.eval(), v_np)
+
+        w_at, v_at = self.op(a, "L")
+        w_np, v_np = np.linalg.eigh(a, "L")
+        assert np.allclose(w_at.eval(), w_np)
+        assert np.allclose(v_at.eval(), v_np)
+
     def test_grad(self):
         X = self.X
         # We need to do the dot inside the graph because Eigh needs a
@@ -359,6 +366,14 @@ class TestEigh(TestEig):
         utt.verify_grad(lambda x: self.op(x.dot(x.T))[1], [X], rng=self.rng)
         utt.verify_grad(lambda x: self.op(x.dot(x.T), "U")[0], [X], rng=self.rng)
         utt.verify_grad(lambda x: self.op(x.dot(x.T), "U")[1], [X], rng=self.rng)
+
+    def test_dtype(self):
+        x = np.eye(2).astype(np.complex128)
+        w_at, v_at = self.op(x)
+        w_np, v_np = np.linalg.eigh(x)
+
+        assert w_at.eval().dtype == w_np.dtype
+        assert v_at.eval().dtype == v_np.dtype
 
 
 class TestEighFloat32(TestEigh):
