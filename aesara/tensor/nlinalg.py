@@ -10,9 +10,9 @@ from aesara.graph.basic import Apply
 from aesara.graph.op import Op
 from aesara.tensor import basic as at
 from aesara.tensor import math as tm
-
 from aesara.tensor.basic import as_tensor_variable, extract_diag
 from aesara.tensor.type import dvector, lscalar, matrix, tensor, vector
+
 
 logger = logging.getLogger(__name__)
 
@@ -148,11 +148,11 @@ class MatrixInverse(Op):
         (gz,) = g_outputs
 
         # Take transpose of last two dimensions
-        gz_transpose = swapaxes(gz, -1, -2)
+        gz_transpose = at.swapaxes(gz, -1, -2)
 
         output = xi * gz_transpose * xi
 
-        output_transpose = swapaxes(output, -1, -2)
+        output_transpose = at.swapaxes(output, -1, -2)
         return [-output_transpose]
 
     def R_op(self, inputs, eval_points):
